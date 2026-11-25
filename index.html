@@ -1,0 +1,364 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Configuratore Layout Display</title>
+  <meta name="description" content="Configuratore di layout per display e visualizzazioni CODESYS: dimensioni in pixel, area di lavoro, righe e colonne di elementi, coordinate X/Y dell'angolo in alto a sinistra di ogni blocco pronte da copiare.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0e6b39">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='1' y='4' width='30' height='22' rx='4' fill='%23107c41'/%3E%3Crect x='5' y='8.5' width='5' height='5' rx='1' fill='%23fff'/%3E%3Crect x='12' y='8.5' width='15' height='5' rx='1' fill='%23fff' opacity='.85'/%3E%3Crect x='5' y='16.5' width='5' height='5' rx='1' fill='%23fff'/%3E%3Crect x='12' y='16.5' width='15' height='5' rx='1' fill='%23fff' opacity='.85'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="appbar">
+  <div class="brand">
+    <span class="brand-logo" data-icon="logo"></span>
+    <div class="brand-text">
+      <strong>Configuratore Layout Display</strong>
+      <span>Coordinate dei blocchi per visualizzazioni CODESYS</span>
+    </div>
+  </div>
+  <label class="doc-name">
+    <span class="sr-only">Nome del layout</span>
+    <input id="cfg-name" type="text" class="doc-input" title="Nome del layout (usato per salvataggi e file esportati)">
+  </label>
+  <span class="save-state" id="save-state" title="Il lavoro viene salvato automaticamente in questo browser">Salvataggio automatico attivo</span>
+</header>
+
+<nav class="ribbon" aria-label="Comandi">
+  <div class="rb-group">
+    <button type="button" class="rb-btn" id="btn-new" data-icon="new" title="Nuovo layout con i valori iniziali"><span>Nuovo</span></button>
+    <button type="button" class="rb-btn" id="btn-open" data-icon="open" title="Apri un layout salvato"><span>Apri</span></button>
+    <button type="button" class="rb-btn" id="btn-save" data-icon="save" title="Salva il layout con un nome (Ctrl+S)"><span>Salva</span></button>
+  </div>
+  <div class="rb-group">
+    <button type="button" class="rb-btn" id="btn-import" data-icon="upload" title="Importa le impostazioni da un file .json"><span>Importa</span></button>
+    <button type="button" class="rb-btn" id="btn-export-cfg" data-icon="download" title="Esporta le impostazioni in un file .json (backup o altro PC)"><span>Esporta</span></button>
+    <button type="button" class="rb-btn" id="btn-link" data-icon="link" title="Copia un link che contiene tutto il layout"><span>Link</span></button>
+    <input type="file" id="file-import" accept=".json,application/json" hidden>
+  </div>
+  <div class="rb-group">
+    <button type="button" class="rb-btn" id="btn-undo" data-icon="undo" title="Annulla (Ctrl+Z)"><span>Annulla</span></button>
+    <button type="button" class="rb-btn" id="btn-redo" data-icon="redo" title="Ripristina (Ctrl+Y)"><span>Ripristina</span></button>
+  </div>
+  <div class="rb-group rb-right">
+    <button type="button" class="rb-btn" id="btn-help" data-icon="help" title="Guida rapida"><span>Guida</span></button>
+    <button type="button" class="rb-btn" id="btn-theme" data-icon="theme"><span id="theme-label">Auto</span></button>
+  </div>
+</nav>
+
+<main class="workspace">
+
+  <!-- ============================ IMPOSTAZIONI ============================ -->
+  <aside class="editor" aria-label="Impostazioni del layout">
+
+    <section class="panel">
+      <h2 class="panel-title"><span class="step">1</span>Display</h2>
+      <table class="props" data-nav>
+        <colgroup><col class="c-label"><col><col class="c-unit"></colgroup>
+        <tr>
+          <th scope="row"><label for="display-preset">Formato</label></th>
+          <td colspan="2"><select id="display-preset" class="cell"></select></td>
+        </tr>
+        <tr>
+          <th scope="row"><label for="display-w">Larghezza</label></th>
+          <td><input id="display-w" class="cell num" type="text"></td>
+          <td class="unit">px</td>
+        </tr>
+        <tr>
+          <th scope="row"><label for="display-h">Altezza</label></th>
+          <td><input id="display-h" class="cell num" type="text"></td>
+          <td class="unit">px</td>
+        </tr>
+      </table>
+      <button type="button" class="link-btn small" id="btn-rotate" data-icon="swap" title="Scambia larghezza e altezza (display verticale)">Ruota display</button>
+    </section>
+
+    <section class="panel group-panel">
+      <div class="sheet-tabs" id="group-tabs" role="tablist" aria-label="Gruppi di elementi"></div>
+
+      <div class="group-head">
+        <label class="group-name">
+          <span>Nome gruppo</span>
+          <input id="group-name" class="cell" type="text">
+        </label>
+        <button type="button" class="icon-btn" id="btn-dup-group" data-icon="copy" title="Duplica il gruppo" aria-label="Duplica il gruppo"></button>
+        <button type="button" class="icon-btn danger" id="btn-del-group" data-icon="trash" title="Elimina il gruppo" aria-label="Elimina il gruppo"></button>
+      </div>
+
+      <h2 class="panel-title"><span class="step">2</span>Area di lavoro <small>offset dai bordi</small></h2>
+      <div class="boxmodel" data-nav>
+        <label class="bm-top"><span>Alto</span><input id="off-top" class="cell num" type="text" aria-label="Offset in alto (px)"></label>
+        <label class="bm-left"><span>Sinistra</span><input id="off-left" class="cell num" type="text" aria-label="Offset a sinistra (px)"></label>
+        <div class="bm-area" id="area-info" aria-live="polite"></div>
+        <label class="bm-right"><span>Destra</span><input id="off-right" class="cell num" type="text" aria-label="Offset a destra (px)"></label>
+        <label class="bm-bottom"><span>Basso</span><input id="off-bottom" class="cell num" type="text" aria-label="Offset in basso (px)"></label>
+      </div>
+
+      <h2 class="panel-title"><span class="step">3</span>Blocchi di ogni elemento</h2>
+      <div class="seg-row">
+        <div class="seg" id="dir-seg" role="radiogroup" aria-label="Disposizione dei blocchi nell'elemento">
+          <button type="button" role="radio" data-dir="h" title="Blocchi uno accanto all'altro (es. LED + scritta)">Affiancati →</button>
+          <button type="button" role="radio" data-dir="v" title="Blocchi uno sotto l'altro (es. titolo sopra al valore)">Impilati ↓</button>
+        </div>
+      </div>
+      <div class="table-scroll"><div id="blocks-editor"></div></div>
+      <div class="row-actions">
+        <button type="button" class="link-btn" id="btn-add-block" data-icon="plus">Aggiungi blocco</button>
+      </div>
+      <p class="hint" id="element-info"></p>
+
+      <h2 class="panel-title"><span class="step">4</span>Disposizione degli elementi</h2>
+      <table class="props" data-nav>
+        <colgroup><col class="c-label"><col><col class="c-unit"></colgroup>
+        <tr>
+          <th scope="row"><label for="count">Numero elementi</label></th>
+          <td><input id="count" class="cell num" type="text"></td>
+          <td class="unit"></td>
+        </tr>
+        <tr>
+          <th scope="row"><label for="columns">Colonne</label></th>
+          <td><input id="columns" class="cell num" type="text"></td>
+          <td class="unit"></td>
+        </tr>
+        <tr>
+          <th scope="row"><label for="row-gap">Distanza tra righe</label></th>
+          <td><input id="row-gap" class="cell num" type="text"></td>
+          <td class="unit">px</td>
+        </tr>
+        <tr>
+          <th scope="row"><label for="col-gap">Distanza tra colonne</label></th>
+          <td><input id="col-gap" class="cell num" type="text"></td>
+          <td class="unit">px</td>
+        </tr>
+        <tr>
+          <th scope="row"><label for="order">Numerazione</label></th>
+          <td colspan="2">
+            <select id="order" class="cell">
+              <option value="rows">Per righe (→ poi ↓)</option>
+              <option value="cols">Per colonne (↓ poi →)</option>
+            </select>
+          </td>
+        </tr>
+        <tr>
+          <th scope="row"><label for="align-h">Allineamento orizz.</label></th>
+          <td colspan="2">
+            <select id="align-h" class="cell">
+              <option value="start">Sinistra</option>
+              <option value="center">Centro</option>
+              <option value="end">Destra</option>
+              <option value="distribute">Distribuisci</option>
+            </select>
+          </td>
+        </tr>
+        <tr>
+          <th scope="row"><label for="align-v">Allineamento vert.</label></th>
+          <td colspan="2">
+            <select id="align-v" class="cell">
+              <option value="start">Alto</option>
+              <option value="center">Centro</option>
+              <option value="end">Basso</option>
+              <option value="distribute">Distribuisci</option>
+            </select>
+          </td>
+        </tr>
+      </table>
+      <div class="fit-box" id="fit-info" aria-live="polite"></div>
+    </section>
+  </aside>
+
+  <!-- ============================== RISULTATI ============================== -->
+  <div class="results">
+
+    <section class="card" id="preview-card" aria-labelledby="preview-title">
+      <header class="card-head">
+        <h2 id="preview-title">Anteprima <span class="muted" id="preview-size"></span></h2>
+        <div class="tools">
+          <label class="tool-select">Zoom
+            <select id="zoom" class="cell small">
+              <option value="fit">Adatta</option>
+              <option value="0.5">50%</option>
+              <option value="1">100%</option>
+              <option value="1.5">150%</option>
+              <option value="2">200%</option>
+            </select>
+          </label>
+          <label class="chk"><input type="checkbox" id="opt-grid">Griglia</label>
+          <label class="chk"><input type="checkbox" id="opt-names">Nomi</label>
+          <label class="chk"><input type="checkbox" id="opt-coords">Coordinate</label>
+          <button type="button" class="tool-btn" id="btn-png" data-icon="image" title="Scarica l'anteprima come immagine PNG in scala 1:1">PNG</button>
+          <button type="button" class="tool-btn" id="btn-svg" data-icon="download" title="Scarica l'anteprima come disegno SVG in scala 1:1">SVG</button>
+        </div>
+      </header>
+      <div class="preview-wrap" id="preview-wrap">
+        <div class="preview" id="preview"></div>
+      </div>
+      <footer class="statusbar">
+        <span id="cursor-pos">Cursore  X — · Y —</span>
+        <span id="hover-info" class="muted"></span>
+      </footer>
+    </section>
+
+    <section class="card" id="output-card" aria-labelledby="output-title">
+      <header class="card-head">
+        <h2 id="output-title">Coordinate <span class="muted">angolo in alto a sinistra di ogni blocco</span></h2>
+        <div class="tools">
+          <div class="seg small" id="view-seg" role="radiogroup" aria-label="Formato della tabella">
+            <button type="button" role="radio" data-view="long" title="Una riga per ogni blocco: X, Y, larghezza, altezza">Per blocco</button>
+            <button type="button" role="radio" data-view="wide" title="Una riga per elemento, con X e Y di ogni blocco affiancate">Per elemento</button>
+          </div>
+          <label class="chk" id="only-active-wrap" hidden><input type="checkbox" id="opt-only-active">Solo gruppo attivo</label>
+          <label class="chk" title="Un clic su una cella copia subito il valore negli appunti"><input type="checkbox" id="opt-autocopy">Copia al clic</label>
+          <button type="button" class="tool-btn primary" id="btn-copy-all" data-icon="copy" title="Copia tutta la tabella (si incolla in Excel)">Copia tutto</button>
+          <button type="button" class="tool-btn" id="btn-export" data-icon="code" title="Esporta: CSV, codice ST per CODESYS, testo, JSON">Esporta…</button>
+        </div>
+      </header>
+      <div class="summary" id="summary" aria-live="polite"></div>
+      <div class="formula-bar" aria-live="polite">
+        <span class="namebox" id="namebox" title="Cella selezionata">—</span>
+        <span class="fx" aria-hidden="true">fx</span>
+        <span class="fx-value" id="fx-value"></span>
+      </div>
+      <div class="sheets" id="sheets"></div>
+      <footer class="statusbar">
+        <span id="sheet-hint" class="muted"></span>
+        <span id="sel-stats"></span>
+      </footer>
+    </section>
+
+  </div>
+</main>
+
+<footer class="site-footer">
+  Tutti i dati restano nel tuo browser: nessuna informazione viene inviata a server.
+  Coordinate in pixel, origine (0, 0) nell'angolo in alto a sinistra del display.
+</footer>
+
+<!-- ============================== FINESTRE ============================== -->
+
+<dialog class="dialog" id="dlg-configs" aria-labelledby="configs-title">
+  <form method="dialog" class="dlg-head">
+    <h2 id="configs-title">Layout salvati</h2>
+    <button class="icon-btn" value="close" data-icon="close" aria-label="Chiudi" title="Chiudi"></button>
+  </form>
+  <div class="dlg-body">
+    <div class="save-row">
+      <label class="opt grow"><span>Salva il layout corrente come</span>
+        <input id="save-name" class="cell" type="text" maxlength="60" autocomplete="off" spellcheck="false">
+      </label>
+      <button type="button" class="btn primary" id="btn-save-confirm" data-icon="save">Salva</button>
+    </div>
+    <p class="hint">Se il nome esiste già, il layout viene aggiornato. I salvataggi restano in questo browser:
+      per spostarli su un altro PC usa <b>Esporta</b> e <b>Importa</b>.</p>
+    <h3 class="dlg-sub">Apri un layout</h3>
+    <div class="saved-list" id="saved-list"></div>
+  </div>
+</dialog>
+
+<dialog class="dialog wide" id="dlg-export" aria-labelledby="export-title">
+  <form method="dialog" class="dlg-head">
+    <h2 id="export-title">Esporta coordinate</h2>
+    <button class="icon-btn" value="close" data-icon="close" aria-label="Chiudi" title="Chiudi"></button>
+  </form>
+  <div class="dlg-body">
+    <div class="fmt-tabs" id="export-tabs" role="tablist" aria-label="Formato"></div>
+    <div class="export-opts" id="export-opts"></div>
+    <div id="export-outputs"></div>
+  </div>
+</dialog>
+
+<dialog class="dialog wide" id="dlg-help" aria-labelledby="help-title">
+  <form method="dialog" class="dlg-head">
+    <h2 id="help-title">Guida rapida</h2>
+    <button class="icon-btn" value="close" data-icon="close" aria-label="Chiudi" title="Chiudi"></button>
+  </form>
+  <div class="dlg-body help">
+    <ol class="help-steps">
+      <li><b>Display</b>: risoluzione in pixel, es. 800 × 480, oppure scegli un formato.</li>
+      <li><b>Area di lavoro</b>: gli offset riducono l'area utile dai bordi, es. 30 px in alto
+        (intestazione) e 50 px in basso (pulsanti).</li>
+      <li><b>Blocchi di ogni elemento</b>: un elemento è la sequenza di blocchi che si ripete,
+        es. <i>LED</i> 50 × 50 + <i>Scritta</i> 300 × 50. Per ogni blocco imposti larghezza, altezza e
+        <b>distanza</b>: lo spazio prima del blocco, dal blocco precedente (per il primo: dal bordo dell'area).</li>
+      <li><b>Disposizione</b>: numero di elementi, colonne, distanza tra righe e tra colonne, allineamento.</li>
+    </ol>
+
+    <figure class="help-figure">
+      <svg class="help-svg" viewBox="0 0 500 124" role="img" aria-label="Esempio: distanza 15, LED largo 50, distanza 15, scritta larga 300. X del LED 15, X della scritta 80.">
+        <line class="h-edge" x1="20" y1="6" x2="20" y2="118"/>
+        <rect class="h-led" x="38" y="38" width="60" height="60"/>
+        <rect class="h-txt" x="116" y="38" width="360" height="60"/>
+        <text class="h-in" x="68" y="73" text-anchor="middle">LED</text>
+        <text class="h-in" x="296" y="73" text-anchor="middle">Scritta</text>
+        <path class="h-dim" d="M20 24H476M38 19v10M98 19v10M116 19v10M476 19v10"/>
+        <text class="h-dt" x="29" y="15" text-anchor="middle">15</text>
+        <text class="h-dt" x="68" y="15" text-anchor="middle">50</text>
+        <text class="h-dt" x="107" y="15" text-anchor="middle">15</text>
+        <text class="h-dt" x="296" y="15" text-anchor="middle">300</text>
+        <circle class="h-pt" cx="38" cy="38" r="4"/>
+        <circle class="h-pt" cx="116" cy="38" r="4"/>
+        <text class="h-pl" x="38" y="116">X = 15</text>
+        <text class="h-pl" x="116" y="116">X = 80</text>
+      </svg>
+      <figcaption>Esempio: LED e Scritta con distanza 15 px ciascuno. Le coordinate sono quelle
+        dell'<b>angolo in alto a sinistra</b> (pallini verdi). Con 6 righe alte 50 px e 20 px tra le righe
+        si occupano 6 × 50 + 5 × 20 = 400 px, cioè l'area 480 − 30 − 50.</figcaption>
+    </figure>
+
+    <h3>Coordinate per CODESYS</h3>
+    <p>X e Y sono misurate dall'angolo in alto a sinistra del display (0, 0): sono i valori da inserire
+      nelle proprietà <i>Posizione → X, Y</i> degli elementi; <i>Larg.</i> e <i>Alt.</i> vanno in
+      larghezza e altezza. Con <b>Esporta… → CODESYS (ST)</b> ottieni una struttura (DUT) e una lista di
+      variabili globali (GVL) con tutte le coordinate.</p>
+
+    <h3>Copiare i valori</h3>
+    <ul>
+      <li><b>Clic</b> su una cella: copia il valore (con “Copia al clic” attivo).</li>
+      <li><b>Trascina</b> o <b>Maiusc + clic</b>: copia un intervallo di celle, da incollare in Excel.</li>
+      <li>Lettere di colonna e numeri di riga selezionano intere colonne o righe; <b>Ctrl+C</b> copia la selezione,
+        <b>Ctrl+A</b> seleziona tutto.</li>
+      <li>Passa il mouse su un blocco dell'anteprima per vederne le coordinate; un clic lo seleziona in tabella.</li>
+    </ul>
+
+    <h3>Celle come in Excel</h3>
+    <ul>
+      <li>Nelle celle numeriche puoi scrivere formule: <code>=800-30-50</code>, <code>(800-45)/2</code>.</li>
+      <li><b>Invio</b> o frecce <b>↑ ↓</b> per spostarti, <b>Esc</b> annulla la modifica.</li>
+      <li>Nella tabella dei blocchi puoi incollare righe copiate da Excel
+        (Nome, Larghezza, Altezza, Distanza, Allineamento).</li>
+    </ul>
+
+    <h3>Più gruppi</h3>
+    <p>Con <b>+</b> nelle schede aggiungi un altro gruppo (es. una fila di pulsanti in basso): ognuno ha la
+      sua area, i suoi blocchi e la sua disposizione. I blocchi che si sovrappongono tra gruppi vengono segnalati.</p>
+
+    <h3>Salvataggio</h3>
+    <ul>
+      <li>Il lavoro viene salvato automaticamente in questo browser.</li>
+      <li><b>Salva</b> (Ctrl+S) conserva il layout con un nome, <b>Apri</b> lo ricarica.</li>
+      <li><b>Esporta</b> / <b>Importa</b>: file .json per backup o per un altro PC. <b>Link</b>: copia un indirizzo
+        che contiene tutto il layout.</li>
+      <li><b>Annulla</b> / <b>Ripristina</b>: Ctrl+Z / Ctrl+Y.</li>
+    </ul>
+    <p class="privacy">Nessun dato viene inviato a server: tutto resta nel tuo browser.</p>
+  </div>
+</dialog>
+
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+<div class="tooltip" id="tooltip" hidden></div>
+
+<noscript><p class="noscript">Per usare il configuratore è necessario abilitare JavaScript.</p></noscript>
+
+<script src="js/expr.js"></script>
+<script src="js/layout.js"></script>
+<script src="js/exporters.js"></script>
+<script src="js/storage.js"></script>
+<script src="js/icons.js"></script>
+<script src="js/sheet.js"></script>
+<script src="js/preview.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
