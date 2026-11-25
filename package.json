@@ -1,0 +1,10 @@
+{
+  "name": "config-display-size-format",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Configuratore di layout per display e visualizzazioni CODESYS: calcola le coordinate X/Y dei blocchi.",
+  "scripts": {
+    "test": "node --test",
+    "check-secrets": "bash scripts/check-secrets.sh"
+  }
+}

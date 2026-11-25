@@ -1,0 +1,50 @@
+# =====================================================================
+#  File che NON devono mai finire nel repository (che è pubblico).
+#  Se un file contiene password, token, chiavi API o accessi al PC,
+#  deve restare solo in locale.
+# =====================================================================
+
+# --- Segreti, credenziali e chiavi ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.jks
+*.ppk
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+credentials*.json
+secrets*.json
+*.secret
+*.secrets
+.netrc
+.npmrc
+.git-credentials
+
+# --- Impostazioni locali di Claude Code e degli editor ---
+.claude/settings.local.json
+.claude/**/*.local.*
+CLAUDE.local.md
+.vscode/
+.idea/
+*.swp
+*~
+
+# --- File di sistema ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Dipendenze, build, log, report di test ---
+node_modules/
+dist/
+coverage/
+test-results/
+playwright-report/
+*.log
