@@ -4,7 +4,7 @@
  * Lo stesso disegno serve per l'anteprima interattiva (scalata) e per
  * l'esportazione PNG/SVG in scala 1:1 (1 unità = 1 pixel del display).
  * I colori del tema chiaro sono attributi SVG; il CSS della pagina li
- * sovrascrive per il tema scuro e per evidenziare i blocchi.
+ * sovrascrive per il tema scuro e per evidenziare gli oggetti.
  */
 (function () {
   'use strict';
@@ -17,8 +17,7 @@
     grid: '#e8edf3',
     gridMajor: '#d3dbe5',
     hatch: '#c3ccd8',
-    area: '#107c41',
-    areaDim: '#94a3b8',
+    area: '#005eb8',
     text: '#1f2937',
     danger: '#dc2626',
     warn: '#d97706'
@@ -34,7 +33,31 @@
 
   function fits(text, size, max) { return text.length * size * 0.58 <= max; }
 
-  /* o = { scale, active, showGrid, showNames, showCoords } */
+  function rgb(hex) {
+    var n = parseInt(String(hex).slice(1), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+
+  function luminance(hex) {
+    var c = rgb(hex);
+    return (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) / 255;
+  }
+
+  function darken(hex, f) {
+    var c = rgb(hex).map(function (v) { return Math.round(v * (1 - f)); });
+    return '#' + c.map(function (v) { return ('0' + v.toString(16)).slice(-2); }).join('');
+  }
+
+  /* Bordo leggibile anche per colori molto chiari (es. RAL 9010, 7035). */
+  function strokeFor(hex) { return luminance(hex) > 0.72 ? darken(hex, 0.38) : hex; }
+
+  /* Testo leggibile sopra un colore pieno. */
+  function textOn(hex) { return luminance(hex) > 0.55 ? '#111827' : '#ffffff'; }
+
+  /*
+   * o = { scale, selected, focus ({id:true} o null), coord ('frame'|'display'),
+   *       showGrid, showNames, showCoords, solid, exportMode }
+   */
   function markup(res, o) {
     var W = res.display.width, H = res.display.height, k = 1 / o.scale;
     var fs = 11.5 * k, fsc = 10 * k, pad = 3 * k, hs = r3(8 * k);
@@ -60,44 +83,44 @@
     if (minor) s.push('<rect width="', W, '" height="', H, '" fill="url(#pv-grid10)"/>');
     if (o.showGrid) s.push('<rect width="', W, '" height="', H, '" fill="url(#pv-grid50)"/>');
 
-    // Zone escluse dagli offset del gruppo attivo (tratteggio)
-    var ag = res.groups[o.active];
-    if (ag) {
-      var a = ag.area;
-      var d = 'M0 0H' + W + 'V' + H + 'H0Z';
-      if (ag.areaValid) d += 'M' + a.x + ' ' + a.y + 'v' + a.h + 'h' + a.w + 'v' + (-a.h) + 'Z';
-      s.push('<path class="pv-excl" d="', d, '" fill="url(#pv-hatch)" fill-rule="evenodd"/>');
-    }
+    var sel = !o.exportMode && o.selected ? res.nodes[o.selected] : null;
 
-    // Contorni delle aree di lavoro
-    res.groups.forEach(function (g) {
-      if (!g.areaValid) return;
-      var act = g.index === o.active;
-      s.push('<rect class="pv-area', act ? ' active' : '', '" x="', g.area.x, '" y="', g.area.y, '" width="', g.area.w,
-        '" height="', g.area.h, '" fill="none" stroke="', act ? C.area : C.areaDim, '" stroke-width="', act ? 1.5 : 1,
-        '" stroke-dasharray="', act ? '6 4' : '3 3', '" vector-effect="non-scaling-stroke"/>');
-    });
-
-    // Blocchi
-    var multi = res.groups.length > 1;
-    res.blocks.forEach(function (b) {
-      var out = b.outArea || b.outDisplay;
-      var cls = 'pv-blk' + (multi && b.group !== o.active ? ' pv-dim' : '') + (out ? ' pv-out' : '') + (b.overlap ? ' pv-ovl' : '');
-      s.push('<g class="', cls, '" data-key="', esc(b.key), '">');
-      s.push('<rect x="', b.x, '" y="', b.y, '" width="', b.w, '" height="', b.h, '" fill="', b.color,
-        '" fill-opacity="0.22" stroke="', out ? C.danger : (b.overlap ? C.warn : b.color), '" stroke-width="1"',
+    // Oggetti (in ordine di albero: ogni frame prima del suo contenuto)
+    res.items.forEach(function (it) {
+      var isFrame = it.kind === 'frame';
+      var out = it.outArea || it.outDisplay;
+      var dim = o.focus && !o.focus[it.node];
+      var cls = 'pv-item ' + (isFrame ? 'pv-frm' : 'pv-blk') + (dim ? ' pv-dim' : '') + (out ? ' pv-out' : '') + (it.overlap ? ' pv-ovl' : '');
+      var stroke = out ? C.danger : (it.overlap ? C.warn : strokeFor(it.color));
+      var fillOp = o.solid ? 1 : (isFrame ? 0.07 : 0.22);
+      s.push('<g class="', cls, '" data-key="', esc(it.key), '">');
+      s.push('<rect x="', it.x, '" y="', it.y, '" width="', Math.max(0, it.w), '" height="', Math.max(0, it.h), '" fill="', it.color,
+        '" fill-opacity="', fillOp, '" stroke="', stroke, '" stroke-width="', isFrame ? 1.5 : 1, '"',
         out ? ' stroke-dasharray="4 3"' : '', ' vector-effect="non-scaling-stroke" shape-rendering="crispEdges"/>');
 
-      var innerW = b.w - 2 * pad, innerH = b.h - 2 * pad;
-      var name = null, coord = null;
-      if (o.showNames) {
-        var full = b.name + ' ' + b.n;
-        if (fits(full, fs, innerW)) name = full;
-        else if (fits(String(b.n), fs, innerW)) name = String(b.n);
+      var tcls = o.solid ? ' class="oc"' : '';
+      var tfill = o.solid ? textOn(it.color) : C.text;
+      var X = o.coord === 'display' ? it.x : it.rx, Y = o.coord === 'display' ? it.y : it.ry;
+      var innerW = it.w - 2 * pad, innerH = it.h - 2 * pad;
+      var coord = o.showCoords && fits(X + ',' + Y, fsc, innerW) ? X + ',' + Y : null;
+
+      if (isFrame) {
+        var label = o.showNames ? it.label : '';
+        var line = label && coord ? label + '  ·  ' + coord : (label || coord || '');
+        if (line && !fits(line, fsc, innerW)) line = label && fits(label, fsc, innerW) ? label : (coord || '');
+        if (line && innerH >= fsc) {
+          s.push('<text', tcls, ' x="', r3(it.x + pad), '" y="', r3(it.y + pad + fsc * 0.82), '" font-size="', r3(fsc),
+            '" font-weight="600" fill="', tfill, '" fill-opacity="0.85">', esc(line), '</text>');
+        }
+        s.push('</g>');
+        return;
       }
-      if (o.showCoords) {
-        var ct = b.x + ',' + b.y;
-        if (fits(ct, fsc, innerW)) coord = ct;
+
+      var name = null;
+      if (o.showNames) {
+        var full = it.name + ' ' + it.n;
+        if (fits(full, fs, innerW)) name = full;
+        else if (fits(String(it.n), fs, innerW)) name = String(it.n);
       }
       var both = name !== null && coord !== null && innerH >= fs + fsc + pad;
       if (!both) {
@@ -108,20 +131,34 @@
         }
       }
       if (coord !== null) {
-        s.push('<text class="pv-coord" x="', r3(b.x + pad), '" y="', r3(b.y + pad + fsc * 0.82), '" font-size="', r3(fsc),
-          '" fill="', C.text, '" fill-opacity="0.8">', esc(coord), '</text>');
+        s.push('<text', tcls, ' x="', r3(it.x + pad), '" y="', r3(it.y + pad + fsc * 0.82), '" font-size="', r3(fsc),
+          '" fill="', tfill, '" fill-opacity="0.8">', esc(coord), '</text>');
       }
       if (name !== null) {
-        var top = both ? b.y + pad + fsc : b.y;
-        var h = both ? b.h - pad - fsc : b.h;
-        s.push('<text class="pv-name" x="', r3(b.x + b.w / 2), '" y="', r3(top + h / 2 + fs * 0.35), '" font-size="', r3(fs),
-          '" text-anchor="middle" font-weight="600" fill="', C.text, '">', esc(name), '</text>');
+        var top = both ? it.y + pad + fsc : it.y;
+        var h = both ? it.h - pad - fsc : it.h;
+        s.push('<text', tcls, ' x="', r3(it.x + it.w / 2), '" y="', r3(top + h / 2 + fs * 0.35), '" font-size="', r3(fs),
+          '" text-anchor="middle" font-weight="600" fill="', tfill, '">', esc(name), '</text>');
       }
       s.push('</g>');
     });
 
+    // Nodo selezionato: zone escluse dagli offset (tratteggio) e contorno dell'area
+    if (sel) {
+      sel.contexts.forEach(function (c) {
+        var b = c.box, r = c.region;
+        var d = 'M' + b.x + ' ' + b.y + 'h' + b.w + 'v' + b.h + 'h' + (-b.w) + 'Z';
+        if (r.valid) d += 'M' + r.x + ' ' + r.y + 'v' + r.h + 'h' + r.w + 'v' + (-r.h) + 'Z';
+        s.push('<path class="pv-excl" d="', d, '" fill="url(#pv-hatch)" fill-rule="evenodd" pointer-events="none"/>');
+        if (r.valid) {
+          s.push('<rect class="pv-area" x="', r.x, '" y="', r.y, '" width="', r.w, '" height="', r.h,
+            '" fill="none" stroke="', C.area, '" stroke-width="1.5" stroke-dasharray="6 4" vector-effect="non-scaling-stroke" pointer-events="none"/>');
+        }
+      });
+    }
+
     s.push('<rect class="pv-border" x="0" y="0" width="', W, '" height="', H, '" fill="none" stroke="', C.border,
-      '" stroke-width="1" vector-effect="non-scaling-stroke" shape-rendering="crispEdges"/>');
+      '" stroke-width="1" vector-effect="non-scaling-stroke" shape-rendering="crispEdges" pointer-events="none"/>');
     s.push('</svg>');
     return s.join('');
   }
@@ -187,10 +224,13 @@
     this.scale = this._scale(res.display);
     this.host.innerHTML = markup(res, {
       scale: this.scale,
-      active: view.active,
+      selected: view.selected,
+      focus: view.focus,
+      coord: view.coord,
       showGrid: view.showGrid,
       showNames: view.showNames,
-      showCoords: view.showCoords
+      showCoords: view.showCoords,
+      solid: view.solid
     });
     this.svg = this.host.firstChild;
     this.map = {};
@@ -243,17 +283,25 @@
   };
 
   /* ------------------------------------------------------------------ */
-  /*  Esportazione immagine 1:1                                          */
+  /*  Esportazione immagine 1:1 (senza tratteggi e contorni dell'editor) */
   /* ------------------------------------------------------------------ */
 
-  function exportSVG(res, view) {
-    return '<?xml version="1.0" encoding="UTF-8"?>\n' + markup(res, {
+  function exportOptions(view) {
+    return {
       scale: 1,
-      active: view.active,
+      selected: null,
+      focus: null,
+      coord: view.coord,
       showGrid: view.showGrid,
       showNames: view.showNames,
-      showCoords: view.showCoords
-    });
+      showCoords: view.showCoords,
+      solid: view.solid,
+      exportMode: true
+    };
+  }
+
+  function exportSVG(res, view) {
+    return '<?xml version="1.0" encoding="UTF-8"?>\n' + markup(res, exportOptions(view));
   }
 
   function exportPNG(res, view) {
@@ -273,16 +321,10 @@
         }
       };
       img.onerror = function () { reject(new Error('Immagine non generata')); };
-      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(markup(res, {
-        scale: 1,
-        active: view.active,
-        showGrid: view.showGrid,
-        showNames: view.showNames,
-        showCoords: view.showCoords
-      }));
+      img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(markup(res, exportOptions(view)));
     });
   }
 
   DLC.Preview = Preview;
-  DLC.preview = { markup: markup, exportSVG: exportSVG, exportPNG: exportPNG };
+  DLC.preview = { markup: markup, exportSVG: exportSVG, exportPNG: exportPNG, luminance: luminance };
 }());

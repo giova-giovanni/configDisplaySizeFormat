@@ -117,7 +117,8 @@
       }
       if (r === 0) tr.className = 'hdr-row';
       else {
-        if (d.rows[r - 1].warn) tr.className = 'warn';
+        if (d.rows[r - 1].warn) tr.classList.add('warn');
+        if (d.rows[r - 1].kind === 'frame') tr.classList.add('frame-row');
         var keys = d.rows[r - 1].keys;
         for (var k = 0; k < keys.length; k++) this.keyRow[keys[k]] = r;
       }

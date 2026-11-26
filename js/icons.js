@@ -32,7 +32,14 @@
     code: '<path d="m8 6-6 6 6 6M16 6l6 6-6 6"/>',
     table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/>',
     warn: '<path d="M12 3 2 20h20z"/><path d="M12 10v4M12 17v.2"/>',
-    check: '<path d="m5 12 5 5L20 7"/>'
+    check: '<path d="m5 12 5 5L20 7"/>',
+    frame: '<rect x="3" y="4" width="18" height="16" rx="2"/><rect x="7" y="9" width="10" height="7" rx="1"/>',
+    group: '<rect x="3" y="4" width="6" height="6" rx="1"/><path d="M12 7h9"/><rect x="3" y="14" width="6" height="6" rx="1"/><path d="M12 17h9"/>',
+    wrap: '<rect x="2.5" y="3.5" width="19" height="17" rx="2" stroke-dasharray="3 2"/><rect x="7" y="8" width="10" height="8" rx="1"/>',
+    display: '<rect x="2" y="4" width="20" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>',
+    palette: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-.9.7-1.6 1.6-1.6H16a5 5 0 0 0 5-5c0-4-4-7.4-9-7.4z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10" cy="7" r="1.2"/><circle cx="15" cy="7.5" r="1.2"/>',
+    browser: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M7 6.5h.01M10 6.5h.01"/>',
+    file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/>'
   };
 
   function icon(name) {
