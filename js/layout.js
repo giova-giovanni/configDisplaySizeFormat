@@ -25,10 +25,25 @@
  *   count, columns, order ('rows'|'cols'), rowGap, colGap,
  *   alignH / alignV ('start'|'center'|'end'|'distribute') = disposizione
  *
+ *   Opzioni facoltative (presenti solo se impostate):
+ *   hidden        true  = nodo nascosto nell'anteprima e nelle immagini
+ *   allowOverlap  true  = sovrapposizione voluta: non viene segnalata
+ *   transparent   (solo frame) true = sfondo trasparente, false = sfondo pieno;
+ *                 se assente il frame è "automatico": trasparente solo se
+ *                 altrimenti nasconderebbe blocchi dei livelli sottostanti
+ *
+ * Livelli (ordine di sovrapposizione): in ogni elenco il primo nodo è il più
+ * lontano (sfondo), l'ultimo il più vicino (primo piano), come in PowerPoint.
+ *
  * Ogni oggetto posizionato (blocco o frame) ha coordinate intere:
  *   x, y    assolute, rispetto all'angolo in alto a sinistra del display
  *   rx, ry  relative al frame che lo contiene (come dentro una
  *           visualizzazione referenziata da un Frame CODESYS)
+ *   z       posizione nell'ordine di disegno (0 = il più sotto)
+ *
+ * Sovrapposizioni: un frame è un contenitore/livello e può stare sopra altri
+ * livelli senza errori. Si segnalano solo le collisioni tra BLOCCHI di gruppi
+ * diversi (overlapPairs, con il rettangolo in comune).
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./ral.js'));
@@ -48,6 +63,7 @@
     maxNodes: 40,
     maxDepth: 4,
     maxTotalItems: 5000,
+    maxPairs: 500,
     nameLength: 40,
     configNameLength: 60
   };
@@ -128,6 +144,24 @@
     });
   }
 
+  /* Come walk, ma i fratelli dal primo piano al fondo: è l'ordine dell'elenco
+     dei livelli (in alto = davanti), come il "Riquadro selezione" di PowerPoint. */
+  function walkFront(nodes, fn, parent, depth) {
+    var list = nodes || [];
+    for (var i = list.length - 1; i >= 0; i--) {
+      fn(list[i], parent || null, list, i, depth || 0);
+      if (list[i].type === 'frame') walkFront(list[i].children, fn, list[i], (depth || 0) + 1);
+    }
+  }
+
+  function listNodesFront(config) {
+    var out = [];
+    walkFront(config.nodes, function (n, parent, list, index, depth) {
+      out.push({ node: n, parent: parent, list: list, index: index, depth: depth });
+    });
+    return out;
+  }
+
   function findNode(config, id) {
     var found = null;
     walk(config.nodes, function (n, parent, list, index, depth) {
@@ -202,6 +236,96 @@
     return true;
   }
 
+  var ORDER_MOVES = ['front', 'forward', 'backward', 'back'];
+
+  /* Ordine di sovrapposizione come in PowerPoint:
+     'front' primo piano, 'forward' avanti di uno, 'backward' indietro di uno, 'back' sfondo. */
+  function reorder(config, id, how) {
+    var f = findNode(config, id);
+    if (!f || ORDER_MOVES.indexOf(how) === -1) return false;
+    var last = f.list.length - 1;
+    var to = how === 'front' ? last : how === 'back' ? 0
+      : how === 'forward' ? Math.min(last, f.index + 1) : Math.max(0, f.index - 1);
+    if (to === f.index) return false;
+    f.list.splice(f.index, 1);
+    f.list.splice(to, 0, f.node);
+    return true;
+  }
+
+  /* Perché un nodo non può essere spostato in un contenitore ('' = si può). */
+  function canMove(config, id, parentId) {
+    var f = findNode(config, id);
+    if (!f) return 'Oggetto non trovato';
+    var target = parentId ? findNode(config, parentId) : null;
+    if (parentId && (!target || target.node.type !== 'frame')) return 'Si può inserire solo dentro un frame';
+    if (target && descendantIds(f.node)[parentId]) return 'Un frame non può stare dentro se stesso';
+    if ((target ? target.depth + 1 : 0) + subtreeHeight(f.node) > LIMITS.maxDepth) {
+      return 'Non si possono annidare più di ' + LIMITS.maxDepth + ' livelli di frame';
+    }
+    return '';
+  }
+
+  /* Dove sta (in coordinate del display) la regione di lavoro di un nodo e il
+     contenitore di destinazione: serve a mantenere la posizione dopo uno spostamento. */
+  function snapshotPosition(config, id, parentId) {
+    var res = computeLayout(config);
+    var e = res.nodes[id], c = e && e.contexts[0];
+    if (!c || !c.region.valid) return null;
+    var box;
+    if (!parentId) box = { x: 0, y: 0, w: res.display.width, h: res.display.height };
+    else {
+      var pe = res.nodes[parentId], first = pe && pe.contexts[0] && pe.contexts[0].items[0];
+      if (!first) return null;
+      box = { x: first.x, y: first.y, w: first.w, h: first.h };
+    }
+    return { region: c.region, box: box };
+  }
+
+  /* Imposta gli offset in modo che la regione resti dove si trovava sul display.
+     Restituisce false se qualche offset è stato limitato (la regione non entra nel contenitore). */
+  function applyPosition(node, pos) {
+    var r = pos.region, b = pos.box, exact = true;
+    var want = {
+      top: r.y - b.y,
+      left: r.x - b.x,
+      bottom: (b.y + b.h) - (r.y + r.h),
+      right: (b.x + b.w) - (r.x + r.w)
+    };
+    Object.keys(want).forEach(function (k) {
+      var v = Math.round(want[k]);
+      var c = Math.min(LIMITS.offset[1], Math.max(LIMITS.offset[0], v));
+      if (c !== v) exact = false;
+      node.area[k] = c;
+    });
+    return exact;
+  }
+
+  /*
+   * Sposta un nodo (anche con il trascinamento) dentro parentId ('' = display),
+   * nella posizione "index" dell'elenco di destinazione (0 = sfondo, length = primo piano).
+   * Con opts.keepPosition, cambiando contenitore gli offset vengono ricalcolati
+   * perché l'oggetto resti dov'è sul display.
+   * Restituisce { ok, reason, exact, changedContainer, moved }.
+   */
+  function moveNode(config, id, parentId, index, opts) {
+    var why = canMove(config, id, parentId || '');
+    if (why) return { ok: false, reason: why };
+    var f = findNode(config, id);
+    var target = parentId ? findNode(config, parentId) : null;
+    var oldParent = f.parent ? f.parent.id : '';
+    var changed = oldParent !== (parentId || '');
+    var pos = changed && opts && opts.keepPosition ? snapshotPosition(config, id, parentId || '') : null;
+    var list = target ? target.node.children : config.nodes;
+    var oldIndex = f.index;
+    f.list.splice(f.index, 1);
+    var at = index == null ? list.length : index;
+    if (f.list === list && oldIndex < at) at--;
+    at = Math.max(0, Math.min(list.length, at));
+    list.splice(at, 0, f.node);
+    var exact = pos ? applyPosition(f.node, pos) : true;
+    return { ok: true, exact: exact, changedContainer: changed, moved: changed || at !== oldIndex, kept: !!pos };
+  }
+
   function removeNode(config, id) {
     var f = findNode(config, id);
     if (!f || countNodes(config.nodes) - countNodes([f.node]) < 1) return null;
@@ -251,6 +375,125 @@
     frame.children = [f.node];
     f.list.splice(f.index, 1, frame);
     return frame;
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Unione di due gruppi (colonne di larghezza diversa)                */
+  /* ------------------------------------------------------------------ */
+
+  function clone(o) { return JSON.parse(JSON.stringify(o)); }
+
+  function mainStart(b, horiz) { return horiz ? b.x : b.y; }
+  function mainEnd(b, horiz) { return horiz ? b.x + b.w : b.y + b.h; }
+  function sameRect(p, q) { return p.x === q.x && p.y === q.y && p.w === q.w && p.h === q.h; }
+
+  /* Il gruppo unito deve ricostruire ESATTAMENTE la posizione di ogni blocco dei due gruppi. */
+  function mergeMatches(cm, firstEls, secondEls) {
+    if (cm.items.length !== firstEls.length) return false;
+    for (var i = 0; i < cm.items.length; i++) {
+      var me = cm.items[i].blocks, fe = firstEls[i].blocks, se = secondEls[i].blocks, k;
+      if (me.length !== fe.length + se.length) return false;
+      for (k = 0; k < fe.length; k++) if (!sameRect(me[k], fe[k])) return false;
+      for (k = 0; k < se.length; k++) if (!sameRect(me[fe.length + k], se[k])) return false;
+    }
+    return true;
+  }
+
+  /* Configurazione di prova in cui "merged" prende il posto di idA e idB sparisce. */
+  function trialConfig(config, idA, idB, merged) {
+    var trial = clone(config), f = findNode(trial, idA);
+    f.list[f.index] = merged;
+    for (var i = 0; i < f.list.length; i++) {
+      if (f.list[i].id === idB) { f.list.splice(i, 1); break; }
+    }
+    return trial;
+  }
+
+  /*
+   * Prova a unire due gruppi fratelli in uno solo: i blocchi del secondo vengono
+   * messi dopo quelli del primo (nell'ordine in cui compaiono sul display) e la
+   * distanza tra i due è ricavata dalle posizioni reali. L'unione è accettata solo
+   * se ogni blocco resta dove si trovava; altrimenti restituisce il motivo.
+   */
+  function tryMerge(config, idA, idB) {
+    var fa = findNode(config, idA), fb = findNode(config, idB);
+    if (!fa || !fb || idA === idB) return { ok: false, reason: 'Oggetti non validi' };
+    if (fa.node.type !== 'group' || fb.node.type !== 'group') return { ok: false, reason: 'Si possono unire solo gruppi' };
+    if (fa.list !== fb.list) return { ok: false, reason: 'Stanno in contenitori diversi' };
+    var A = fa.node, B = fb.node;
+    if (A.direction !== B.direction) return { ok: false, reason: 'Blocchi disposti in modo diverso (affiancati / impilati)' };
+    if (A.count !== B.count) return { ok: false, reason: 'Numero di elementi diverso (' + A.count + ' e ' + B.count + ')' };
+    if (A.blocks.length + B.blocks.length > LIMITS.maxBlocks) {
+      return { ok: false, reason: 'Troppi blocchi (massimo ' + LIMITS.maxBlocks + ' per elemento)' };
+    }
+    var res = computeLayout(config);
+    var ca = res.nodes[idA].contexts[0], cb = res.nodes[idB].contexts[0];
+    if (!ca || !cb || !ca.items.length || ca.items.length !== cb.items.length) {
+      return { ok: false, reason: 'Nessun elemento da unire' };
+    }
+    var horiz = A.direction !== 'v';
+    var aFirst = mainStart(ca.items[0].blocks[0], horiz) <= mainStart(cb.items[0].blocks[0], horiz);
+    var first = aFirst ? A : B, second = aFirst ? B : A;
+    var firstEls = aFirst ? ca.items : cb.items, secondEls = aFirst ? cb.items : ca.items;
+    var e1 = firstEls[0].blocks, e2 = secondEls[0].blocks;
+    var gap = mainStart(e2[0], horiz) - mainEnd(e1[e1.length - 1], horiz);
+    if (gap < LIMITS.gap[0] || gap > LIMITS.gap[1]) return { ok: false, reason: 'Distanza tra i gruppi fuori limite' };
+
+    function build(base, aligns) {
+      var m = clone(base);
+      m.id = A.id;
+      m.name = A.name;
+      m.blocks = clone(first.blocks).concat(clone(second.blocks));
+      m.blocks[first.blocks.length].gap = gap;
+      if (aligns) m.blocks.forEach(function (b, i) { b.align = aligns[i]; });
+      return m;
+    }
+
+    var bases = [first, second];
+    for (var bi = 0; bi < bases.length; bi++) {
+      var merged = build(bases[bi]);
+      var cm = computeLayout(trialConfig(config, idA, idB, merged)).nodes[A.id].contexts[0];
+      if (cm && mergeMatches(cm, firstEls, secondEls)) return { ok: true, node: merged, removeId: B.id };
+      if (!cm || !cm.items.length) continue;
+      // secondo tentativo: allineamento trasversale dedotto dalle posizioni originali
+      var cross = horiz ? cm.element.h : cm.element.w, el0 = cm.items[0];
+      var origin = horiz ? el0.y : el0.x, aligns = [], okAlign = true;
+      e1.concat(e2).forEach(function (b) {
+        var size = horiz ? b.h : b.w, want = (horiz ? b.y : b.x) - origin;
+        aligns.push(want === 0 ? 'start' : want === cross - size ? 'end'
+          : want === Math.floor((cross - size) / 2) ? 'center' : null);
+        if (aligns[aligns.length - 1] === null) okAlign = false;
+      });
+      if (!okAlign) continue;
+      merged = build(bases[bi], aligns);
+      cm = computeLayout(trialConfig(config, idA, idB, merged)).nodes[A.id].contexts[0];
+      if (cm && mergeMatches(cm, firstEls, secondEls)) return { ok: true, node: merged, removeId: B.id };
+    }
+    return { ok: false, reason: 'Posizioni, righe o allineamenti non compatibili: i blocchi non resterebbero dove sono' };
+  }
+
+  /* Gruppi con cui si può unire idA: ogni fratello con l'esito e, se no, il motivo. */
+  function mergeCandidates(config, id) {
+    var f = findNode(config, id), out = [];
+    if (!f || f.node.type !== 'group') return out;
+    f.list.forEach(function (n) {
+      if (n.id === id || n.type !== 'group') return;
+      var r = tryMerge(config, id, n.id);
+      out.push({ id: n.id, name: n.name, ok: r.ok, reason: r.reason || '' });
+    });
+    return out;
+  }
+
+  /* Unisce idB dentro idA (il gruppo unito mantiene id, nome e posizione di idA). */
+  function mergeGroups(config, idA, idB) {
+    var r = tryMerge(config, idA, idB);
+    if (!r.ok) return r;
+    var f = findNode(config, idA);
+    f.list[f.index] = r.node;
+    for (var i = 0; i < f.list.length; i++) {
+      if (f.list[i].id === idB) { f.list.splice(i, 1); break; }
+    }
+    return { ok: true, node: r.node, removed: idB };
   }
 
   /* ------------------------------------------------------------------ */
@@ -431,6 +674,8 @@
       alignH: oneOf(raw.alignH, GRID_ALIGN, 'start'),
       alignV: oneOf(raw.alignV, GRID_ALIGN, 'start')
     };
+    if (raw.hidden === true) node.hidden = true;
+    if (raw.allowOverlap === true) node.allowOverlap = true;
     if (type === 'group') {
       node.direction = oneOf(raw.direction, DIRECTIONS, 'h');
       var blocks = Array.isArray(raw.blocks) ? raw.blocks.slice(0, LIMITS.maxBlocks).map(normalizeBlock) : [];
@@ -438,6 +683,7 @@
     } else {
       var c = colorPair(raw.color, raw.ral, '#9da1aa');
       node.mode = oneOf(raw.mode, FRAME_MODES, 'fill');
+      if (raw.transparent === true || raw.transparent === false) node.transparent = raw.transparent;
       node.width = toInt(raw.width, LIMITS.frameSize, 300);
       node.height = toInt(raw.height, LIMITS.frameSize, 150);
       node.color = c.color;
@@ -590,6 +836,7 @@
         names: (env.names || []).concat([node.name]),
         children: node.type === 'frame' ? node.children.map(function (c) { return c.id; }) : [],
         blockNames: node.type === 'group' ? node.blocks.map(function (b, i) { return b.name || ('Blocco ' + (i + 1)); }) : [],
+        hidden: !!node.hidden,
         contexts: [],
         items: [],
         out: { area: 0, display: 0 }
@@ -603,6 +850,7 @@
     it.outDisplay = it.x < 0 || it.y < 0 || it.x + it.w > ctx.display.width || it.y + it.h > ctx.display.height;
     if (it.outArea) entry.out.area++;
     if (it.outDisplay) entry.out.display++;
+    it.z = ctx.items.length;
     ctx.items.push(it);
     entry.items.push(it);
   }
@@ -634,6 +882,7 @@
     var el = elementGeometry(node);
     var g = gridCells(node, el.w, el.h, reg);
     var context = newContext(node, env, box, reg, g);
+    var allow = !!env.allow || !!node.allowOverlap, hidden = !!env.hidden || !!node.hidden;
     context.element = el;
     entry.contexts.push(context);
     for (var i = 0; i < g.cells.length; i++) {
@@ -667,6 +916,8 @@
           y: cell.y + t.y,
           w: t.w,
           h: t.h,
+          allow: allow,
+          hidden: hidden,
           overlap: false
         };
         b.rx = b.x - env.origin.x;
@@ -695,6 +946,8 @@
     var fw = fixed ? node.width : reg.w, fh = fixed ? node.height : reg.h;
     var multi = g.cells.length > 1;
     var context = newContext(node, env, box, reg, g);
+    var allow = !!env.allow || !!node.allowOverlap, hidden = !!env.hidden || !!node.hidden;
+    var fill = node.transparent === true ? 'none' : node.transparent === false ? 'solid' : 'auto';
     context.size = { w: fw, h: fh };
     entry.contexts.push(context);
     for (var i = 0; i < g.cells.length; i++) {
@@ -727,6 +980,11 @@
         y: cell.y,
         w: fw,
         h: fh,
+        fill: fill,
+        transparent: fill === 'none',
+        covers: 0,
+        allow: allow,
+        hidden: hidden,
         overlap: false
       };
       f.rx = f.x - env.origin.x;
@@ -741,7 +999,9 @@
         ancestors: env.ancestors.concat([key]),
         dup: env.dup || cell.n > 1,
         depth: env.depth + 1,
-        names: (env.names || []).concat([node.name])
+        names: (env.names || []).concat([node.name]),
+        allow: allow,
+        hidden: hidden
       }, ctx);
     }
     context.count = context.items.length;
@@ -754,28 +1014,64 @@
     });
   }
 
-  /* Sovrapposizioni tra oggetti che non appartengono allo stesso gruppo e che
-     non sono uno dentro l'altro (un frame contiene i suoi figli: non è un errore). */
+  /*
+   * Sovrapposizioni VERE: due blocchi di gruppi diversi che occupano gli stessi pixel.
+   * I frame non contano: sono contenitori/livelli e possono stare uno sopra l'altro
+   * (es. sfondo, menu, pagina a schermo intero). Un nodo con "sovrapposizione voluta"
+   * (o dentro un frame che la ha) non viene segnalato.
+   * Restituisce { items, total, pairs[] }: pairs contiene l'oggetto sotto (a), quello
+   * sopra (b) e il rettangolo in comune; sono limitati a LIMITS.maxPairs.
+   */
   function markOverlaps(items) {
-    if (items.length > 2500) return -1;
-    var i, j;
-    for (i = 0; i < items.length; i++) {
-      var a = items[i];
-      if (a.w <= 0 || a.h <= 0) continue;
-      for (j = i + 1; j < items.length; j++) {
-        var b = items[j];
-        if (a.groupKey === b.groupKey || b.w <= 0 || b.h <= 0) continue;
-        if (a.kind === 'frame' && b.ancestors.indexOf(a.key) !== -1) continue;
-        if (b.kind === 'frame' && a.ancestors.indexOf(b.key) !== -1) continue;
-        if (a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h) {
-          a.overlap = true;
-          b.overlap = true;
+    var blocks = items.filter(function (it) { return it.kind === 'block' && it.w > 0 && it.h > 0; });
+    blocks.sort(function (p, q) { return p.x - q.x || p.z - q.z; });
+    var pairs = [], total = 0;
+    for (var i = 0; i < blocks.length; i++) {
+      var a = blocks[i], aEnd = a.x + a.w;
+      for (var j = i + 1; j < blocks.length; j++) {
+        var b = blocks[j];
+        if (b.x >= aEnd) break;
+        if (a.groupKey === b.groupKey || a.allow || b.allow) continue;
+        var y1 = Math.max(a.y, b.y), y2 = Math.min(a.y + a.h, b.y + b.h);
+        if (y2 <= y1) continue;
+        var x1 = Math.max(a.x, b.x), x2 = Math.min(aEnd, b.x + b.w);
+        a.overlap = true;
+        b.overlap = true;
+        total++;
+        if (pairs.length < LIMITS.maxPairs) {
+          var under = a.z < b.z ? a : b, over = under === a ? b : a;
+          pairs.push({
+            a: under.key, b: over.key, nodeA: under.node, nodeB: over.node,
+            x: x1, y: y1, w: x2 - x1, h: y2 - y1, hidden: !!(a.hidden || b.hidden)
+          });
         }
       }
     }
     var count = 0;
-    for (i = 0; i < items.length; i++) if (items[i].overlap) count++;
-    return count;
+    for (var k = 0; k < items.length; k++) if (items[k].overlap) count++;
+    return { items: count, total: total, pairs: pairs };
+  }
+
+  /*
+   * Sfondo dei frame: 'solid' (colore pieno), 'none' (trasparente) o 'auto'.
+   * Un frame automatico diventa trasparente solo se, essendo pieno, nasconderebbe
+   * blocchi disegnati prima (livelli sotto). Per ogni frame si conta quanti blocchi
+   * visibili copre (campo covers), così la diagnostica può spiegarlo.
+   */
+  function resolveFills(items) {
+    var blocks = items.filter(function (it) { return it.kind === 'block' && !it.hidden && it.w > 0 && it.h > 0; });
+    items.forEach(function (f) {
+      if (f.kind !== 'frame') return;
+      var n = 0;
+      if (!f.hidden && f.fill !== 'none' && f.w > 0 && f.h > 0) {
+        for (var i = 0; i < blocks.length; i++) {
+          var b = blocks[i];
+          if (b.z < f.z && b.x < f.x + f.w && f.x < b.x + b.w && b.y < f.y + f.h && f.y < b.y + b.h) n++;
+        }
+      }
+      f.covers = n;
+      if (f.fill === 'auto') f.transparent = n > 0;
+    });
   }
 
   function computeLayout(config) {
@@ -787,7 +1083,8 @@
       nodes: {}
     };
     computeNodes(config.nodes, { x: 0, y: 0, w: display.width, h: display.height }, {
-      origin: { x: 0, y: 0 }, path: '', relPath: '', prefix: '', ancestors: [], dup: false, depth: 0, names: []
+      origin: { x: 0, y: 0 }, path: '', relPath: '', prefix: '', ancestors: [], dup: false, depth: 0, names: [],
+      allow: false, hidden: false
     }, ctx);
 
     // Ordine dell'albero e nodi senza istanze (es. dentro un frame con 0 ripetizioni)
@@ -800,8 +1097,13 @@
       if (n.type === 'frame') hasFrames = true;
     });
 
-    var overlaps = markOverlaps(ctx.items);
-    var totals = { elements: 0, blocks: 0, frames: 0, outArea: 0, outDisplay: 0, overlaps: overlaps };
+    var ov = markOverlaps(ctx.items);
+    resolveFills(ctx.items);
+    var totals = {
+      elements: 0, blocks: 0, frames: 0, outArea: 0, outDisplay: 0,
+      overlaps: ov.items,        // oggetti coinvolti in una sovrapposizione
+      overlapPairs: ov.total     // coppie di blocchi che si sovrappongono
+    };
     ctx.items.forEach(function (it) {
       if (it.kind === 'frame') totals.frames++; else totals.blocks++;
       if (it.outArea) totals.outArea++;
@@ -820,6 +1122,7 @@
       roots: config.nodes.map(function (n) { return n.id; }),
       hasFrames: hasFrames,
       totals: totals,
+      overlapPairs: ov.pairs,
       truncated: ctx.budget.truncated
     };
   }
@@ -837,8 +1140,10 @@
     newGroup: newGroup,
     newFrame: newFrame,
     walk: walk,
+    walkFront: walkFront,
     findNode: findNode,
     listNodes: listNodes,
+    listNodesFront: listNodesFront,
     countNodes: countNodes,
     descendantIds: descendantIds,
     subtreeHeight: subtreeHeight,
@@ -846,9 +1151,14 @@
     insertNode: insertNode,
     moveTo: moveTo,
     moveSibling: moveSibling,
+    reorder: reorder,
+    canMove: canMove,
+    moveNode: moveNode,
     removeNode: removeNode,
     duplicateNode: duplicateNode,
     wrapInFrame: wrapInFrame,
+    mergeCandidates: mergeCandidates,
+    mergeGroups: mergeGroups,
     elementGeometry: elementGeometry,
     axisPositions: axisPositions,
     maxFit: maxFit,

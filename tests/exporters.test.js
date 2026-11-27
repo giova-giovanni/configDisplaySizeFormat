@@ -152,3 +152,31 @@ test('JSON ad albero e testo', () => {
   assert.match(ftxt, /== Motore \(frame\) ==/);
   assert.match(ftxt, /\(display: X 30, Y 40\)/);
 });
+
+test('tabella "per elemento" con larghezza e altezza di ogni blocco', () => {
+  const [sheet] = X.buildSheets(result, { view: 'wide', sizes: true });
+  assert.deepEqual(sheet.columns.map((c) => c.label), [
+    'Elem.', 'Riga', 'Col.', 'LED X', 'LED Y', 'LED Larg.', 'LED Alt.', 'Scritta X', 'Scritta Y', 'Scritta Larg.', 'Scritta Alt.'
+  ]);
+  assert.deepEqual(sheet.rows[5].values, [6, 6, 1, 15, 380, 50, 50, 80, 380, 300, 50]);
+  // la selezione di un blocco nell'anteprima copre X..Alt. di quel blocco
+  assert.deepEqual(sheet.columns.map((c) => [c.field, c.blockIdx]).slice(3, 7), [['x', 0], ['y', 0], ['w', 0], ['h', 0]]);
+});
+
+test('colonne descrittive nascondibili: restano X, Y e dimensioni', () => {
+  const hide = { n: true, row: true, col: true, color: true };
+  const [lng] = X.buildSheets(result, { view: 'long', hide });
+  assert.deepEqual(lng.columns.map((c) => c.label), ['Blocco', 'X', 'Y', 'Larg.', 'Alt.']);
+  assert.deepEqual(lng.rows[0].values, ['LED', 15, 30, 50, 50]);
+  assert.equal(lng.rows[0].keys.length, 1, 'le chiavi per l\'evidenziazione restano');
+  const [wide] = X.buildSheets(result, { view: 'wide', hide: { n: true, row: true, col: true } });
+  assert.deepEqual(wide.columns.map((c) => c.label), ['LED X', 'LED Y', 'Scritta X', 'Scritta Y']);
+  assert.deepEqual(wide.rows[5].values, [15, 380, 80, 380]);
+  // X, Y, nome, larghezza e altezza non si nascondono nemmeno chiedendolo
+  const [safe] = X.buildSheets(result, { view: 'long', hide: { x: true, y: true, w: true, h: true, name: true } });
+  assert.deepEqual(safe.columns.map((c) => c.label), ['Elem.', 'Riga', 'Col.', 'Blocco', 'X', 'Y', 'Larg.', 'Alt.', 'Colore']);
+  // con i frame: percorso e frame contenitore nascondibili
+  const [fr] = X.buildSheets(motor(), { view: 'long', coord: 'frame', hide: { path: true } });
+  assert.equal(fr.columns[0].label, 'Elem.');
+  assert.equal(fr.rows[0].values[4], 20, 'X del primo frame, dopo Elem./Riga/Col./Blocco');
+});

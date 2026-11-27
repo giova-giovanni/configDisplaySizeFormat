@@ -88,25 +88,39 @@
 
     <section class="panel">
       <h2 class="panel-title"><span class="step">2</span>Struttura della pagina</h2>
-      <div class="tree" id="tree" role="tree" aria-label="Frame e gruppi del layout"></div>
+      <div class="tree" id="tree" role="tree" aria-label="Frame e gruppi del layout, dal primo piano allo sfondo"></div>
+      <p class="hint tree-hint">In alto ciò che sta <b>davanti</b>, in basso lo sfondo. <b>Trascina</b> una riga per cambiare livello o per
+        spostarla in un frame; l'<b>occhio</b> nasconde un oggetto; clic su <b>Display</b> per non selezionare nulla.</p>
       <div class="tree-actions">
         <button type="button" class="tool-btn" id="btn-add-group" data-icon="group" title="Aggiungi un gruppo di elementi (dentro il frame selezionato, oppure accanto al gruppo selezionato)">+ Gruppo</button>
         <button type="button" class="tool-btn" id="btn-add-frame" data-icon="frame" title="Aggiungi un frame: un contenitore per altri gruppi e frame">+ Frame</button>
         <span class="spacer"></span>
-        <button type="button" class="icon-btn" id="btn-node-up" data-icon="up" title="Sposta su" aria-label="Sposta su"></button>
-        <button type="button" class="icon-btn" id="btn-node-down" data-icon="down" title="Sposta giù" aria-label="Sposta giù"></button>
+        <button type="button" class="icon-btn" id="btn-node-front" data-icon="front" title="Porta in primo piano" aria-label="Porta in primo piano"></button>
+        <button type="button" class="icon-btn" id="btn-node-up" data-icon="up" title="Porta avanti (Alt+↑ nell'elenco)" aria-label="Porta avanti"></button>
+        <button type="button" class="icon-btn" id="btn-node-down" data-icon="down" title="Porta indietro (Alt+↓ nell'elenco)" aria-label="Porta indietro"></button>
+        <button type="button" class="icon-btn" id="btn-node-back" data-icon="back" title="Porta in secondo piano" aria-label="Porta in secondo piano"></button>
+        <span class="sep-v" aria-hidden="true"></span>
         <button type="button" class="icon-btn" id="btn-node-wrap" data-icon="wrap" title="Racchiudi in un frame (mantiene la posizione)" aria-label="Racchiudi in un frame"></button>
         <button type="button" class="icon-btn" id="btn-node-dup" data-icon="copy" title="Duplica" aria-label="Duplica"></button>
         <button type="button" class="icon-btn danger" id="btn-node-del" data-icon="trash" title="Elimina" aria-label="Elimina"></button>
       </div>
     </section>
 
-    <section class="panel node-panel">
+    <section class="panel" id="node-empty" hidden>
+      <h2 class="panel-title"><span class="step">3</span>Nessun oggetto selezionato</h2>
+      <p class="hint">L'anteprima mostra <b>tutti i livelli con i colori reali</b> e segnala solo le collisioni vere tra blocchi.
+        Seleziona un gruppo o un frame nella struttura (o un oggetto nell'anteprima) per modificarlo.</p>
+      <div class="fit-box" id="empty-summary" aria-live="polite"></div>
+    </section>
+
+    <section class="panel node-panel" id="node-panel">
       <div class="node-head">
         <span class="kind-badge" id="node-kind">Gruppo</span>
         <label class="grow"><span class="sr-only">Nome</span><input id="node-name" class="cell" type="text" aria-label="Nome dell'oggetto selezionato"></label>
       </div>
       <label class="opt container-row"><span>Si trova in</span><select id="node-parent" class="cell" aria-label="Contenitore"></select></label>
+      <label class="chk node-opt" title="Spunta se questo oggetto deve stare sopra ad altri (es. un menu a comparsa, uno sfondo): non verrà segnalata la sovrapposizione">
+        <input type="checkbox" id="opt-allow">Sovrapposizione voluta (non segnalarla)</label>
 
       <h2 class="panel-title"><span class="step">3</span>Area nel contenitore <small id="area-sub">offset dai bordi del display</small></h2>
       <div class="boxmodel" data-nav>
@@ -125,10 +139,14 @@
             <button type="button" role="radio" data-dir="v" title="Blocchi uno sotto l'altro (es. titolo sopra al valore)">Impilati ↓</button>
           </div>
         </div>
+        <p class="hint blk-hint">Ogni <b>elemento</b> è una riga di blocchi: ogni blocco è una <b>colonna con la sua larghezza</b>
+          (es. <i>Input</i> 150 px + <i>LED</i> 100 px). Per colonne di larghezza diversa aggiungi blocchi, non gruppi.</p>
         <div class="table-scroll"><div id="blocks-editor"></div></div>
         <div class="row-actions">
           <button type="button" class="link-btn" id="btn-add-block" data-icon="plus">Aggiungi blocco</button>
+          <button type="button" class="link-btn" id="btn-merge" data-icon="merge" title="Unisce un altro gruppo, con gli stessi elementi, in colonne di questo gruppo">Unisci con un altro gruppo…</button>
         </div>
+        <div class="elem-prev" id="element-preview" aria-hidden="true"></div>
         <p class="hint" id="element-info"></p>
       </div>
 
@@ -166,6 +184,15 @@
             </tr>
           </tbody>
         </table>
+        <div class="seg-row seg-row-fill">
+          <span class="seg-caption">Sfondo</span>
+          <div class="seg" id="frame-fill-seg" role="radiogroup" aria-label="Sfondo del frame">
+            <button type="button" role="radio" data-fill="auto" title="Pieno, ma trasparente se altrimenti nasconderebbe i blocchi dei livelli sotto">Auto</button>
+            <button type="button" role="radio" data-fill="solid" title="Colore pieno: copre ciò che sta sotto">Colore</button>
+            <button type="button" role="radio" data-fill="none" title="Trasparente: si vede solo il contorno e i livelli sotto">Trasparente</button>
+          </div>
+        </div>
+        <p class="hint" id="frame-fill-info"></p>
         <p class="hint" id="frame-info"></p>
         <p class="hint">Aggiungi gruppi o altri frame <b>dentro</b> questo frame con <b>+ Gruppo</b> / <b>+ Frame</b> mentre è selezionato:
           le loro coordinate sono calcolate rispetto all'angolo in alto a sinistra del frame.</p>
@@ -181,7 +208,7 @@
             <td class="unit"></td>
           </tr>
           <tr>
-            <th scope="row"><label for="columns">Colonne</label></th>
+            <th scope="row"><label for="columns" id="columns-label" title="Quante copie dell'elemento stanno affiancate. Per colonne con larghezze diverse aggiungi blocchi all'elemento.">Colonne</label></th>
             <td><input id="columns" class="cell num" type="text"></td>
             <td class="unit"></td>
           </tr>
@@ -237,8 +264,9 @@
 
     <section class="card" id="preview-card" aria-labelledby="preview-title">
       <header class="card-head">
-        <h2 id="preview-title">Anteprima <span class="muted" id="preview-size"></span></h2>
+        <h2 id="preview-title">Anteprima <span class="muted" id="preview-size"></span> <span class="mode-chip" id="preview-mode"></span></h2>
         <div class="tools">
+          <button type="button" class="tool-btn" id="btn-deselect" data-icon="target" hidden title="Togli la selezione: l'anteprima mostra tutti i livelli con i colori reali">Mostra tutto</button>
           <label class="tool-select">Zoom
             <select id="zoom" class="cell small">
               <option value="fit">Adatta</option>
@@ -251,9 +279,9 @@
           <label class="chk"><input type="checkbox" id="opt-grid">Griglia</label>
           <label class="chk"><input type="checkbox" id="opt-names">Nomi</label>
           <label class="chk"><input type="checkbox" id="opt-coords">Coordinate</label>
-          <label class="chk" title="Mostra i blocchi con il loro colore pieno, come sul pannello"><input type="checkbox" id="opt-solid">Colori pieni</label>
-          <button type="button" class="tool-btn" id="btn-png" data-icon="image" title="Scarica l'anteprima come immagine PNG in scala 1:1">PNG</button>
-          <button type="button" class="tool-btn" id="btn-svg" data-icon="download" title="Scarica l'anteprima come disegno SVG in scala 1:1">SVG</button>
+          <label class="chk" title="Con un oggetto selezionato, mostra i colori pieni (senza selezione l'anteprima è sempre a colori pieni)"><input type="checkbox" id="opt-solid">Colori pieni</label>
+          <label class="chk" id="opt-focus-wrap" title="Con un oggetto selezionato, attenua tutto il resto"><input type="checkbox" id="opt-focus">Evidenzia selezione</label>
+          <button type="button" class="tool-btn" id="btn-image" data-icon="image" title="Scarica tutto il display (tutti i livelli), la selezione o un'immagine per livello: PNG o SVG">Esporta immagine…</button>
         </div>
       </header>
       <div class="preview-wrap" id="preview-wrap">
@@ -280,6 +308,7 @@
               <button type="button" role="radio" data-coord="display" title="Assolute, rispetto all'angolo in alto a sinistra del display, per ogni copia">sul display</button>
             </div>
           </div>
+          <button type="button" class="tool-btn" id="btn-cols" data-icon="columns" title="Larghezza e visibilità delle colonne della tabella" aria-haspopup="true">Colonne</button>
           <label class="chk" id="only-active-wrap" hidden><input type="checkbox" id="opt-only-active"><span id="only-active-label">Solo selezione</span></label>
           <label class="chk" title="Un clic su una cella copia subito il valore negli appunti"><input type="checkbox" id="opt-autocopy">Copia al clic</label>
           <button type="button" class="tool-btn primary" id="btn-copy-all" data-icon="copy" title="Copia tutta la tabella (si incolla in Excel)">Copia tutto</button>
@@ -287,6 +316,7 @@
         </div>
       </header>
       <div class="summary" id="summary" aria-live="polite"></div>
+      <div class="issues" id="issues" hidden></div>
       <div class="formula-bar" aria-live="polite">
         <span class="namebox" id="namebox" title="Cella selezionata">—</span>
         <span class="fx" aria-hidden="true">fx</span>
@@ -362,6 +392,25 @@
   </div>
 </dialog>
 
+<dialog class="dialog wide" id="dlg-image" aria-labelledby="image-title">
+  <form method="dialog" class="dlg-head">
+    <h2 id="image-title">Esporta immagine</h2>
+    <button class="icon-btn" value="close" data-icon="close" aria-label="Chiudi" title="Chiudi"></button>
+  </form>
+  <div class="dlg-body">
+    <div class="img-layout">
+      <div class="img-opts" id="image-opts"></div>
+      <div class="img-side">
+        <div class="img-thumb" id="image-thumb"></div>
+        <p class="hint" id="image-info"></p>
+      </div>
+    </div>
+    <div class="btn-row img-go">
+      <button type="button" class="btn primary" id="btn-image-go" data-icon="download">Scarica</button>
+    </div>
+  </div>
+</dialog>
+
 <dialog class="dialog wide" id="dlg-help" aria-labelledby="help-title">
   <form method="dialog" class="dlg-head">
     <h2 id="help-title">Guida rapida</h2>
@@ -371,10 +420,11 @@
     <ol class="help-steps">
       <li><b>Display</b>: risoluzione in pixel, es. 800 × 480, oppure scegli un formato.</li>
       <li><b>Struttura</b>: la pagina è fatta di <b>gruppi</b> (griglie di elementi uguali) e di <b>frame</b>
-        (contenitori in cui mettere altri gruppi e frame).</li>
+        (contenitori in cui mettere altri gruppi e frame, anche come <b>livelli</b> sovrapposti).</li>
       <li><b>Area nel contenitore</b>: gli offset riducono l'area utile dai bordi del contenitore
         (il display o il frame), es. 30 px in alto per l'intestazione e 50 px in basso per i pulsanti.</li>
-      <li><b>Blocchi di ogni elemento</b>: la sequenza che si ripete, es. <i>LED</i> 50 × 50 + <i>Scritta</i> 300 × 50.
+      <li><b>Blocchi di ogni elemento</b>: la sequenza che si ripete, es. <i>LED</i> 50 × 50 + <i>Scritta</i> 300 × 50:
+        ogni blocco è una <b>colonna con la sua larghezza</b>.
         La <b>distanza</b> è lo spazio prima del blocco: dal blocco precedente, per il primo dal bordo dell'area.</li>
       <li><b>Disposizione</b>: numero di elementi, colonne, distanze, allineamento.</li>
     </ol>
@@ -412,6 +462,40 @@
         Le coordinate <b>sul display</b> sono assolute, per ogni copia.</li>
     </ul>
 
+    <h3>Livelli (come in PowerPoint)</h3>
+    <ul>
+      <li>Nella <b>struttura</b> in alto sta ciò che è <b>davanti</b>, in basso lo sfondo. Per cambiare livello: i pulsanti
+        <b>in primo piano / avanti / indietro / in secondo piano</b>, <b>Alt+↑ / Alt+↓</b> nell'elenco, il <b>tasto destro</b> su una riga,
+        oppure <b>trascina</b> la riga.</li>
+      <li><b>Trascinando</b> una riga sul corpo di un frame la sposti dentro quel frame; sulla riga <b>Display</b> o in fondo all'elenco
+        la porti fuori dai frame. L'oggetto <b>resta dov'è</b> sul display (gli offset si ricalcolano); se non entra nel nuovo
+        contenitore te lo dice e puoi annullare.</li>
+      <li>L'<b>occhio</b> nasconde un oggetto nell'anteprima e nelle immagini; le coordinate non cambiano.</li>
+      <li>Lo <b>sfondo di un frame</b> può essere <b>Auto</b> (pieno, ma trasparente se altrimenti nasconderebbe i blocchi dei livelli sotto),
+        <b>Colore</b> oppure <b>Trasparente</b>: serve per sovrapporre sfondo, menu e pagina a schermo intero.</li>
+    </ul>
+
+    <h3>Anteprima e problemi</h3>
+    <ul>
+      <li><b>Senza selezione</b> (clic su <b>Display</b>, su <b>Mostra tutto</b> o tasto <b>Esc</b>) l'anteprima è <b>reale</b>: colori pieni e
+        tutti i livelli. Selezionando un oggetto il resto viene attenuato (si disattiva con «Evidenzia selezione»).</li>
+      <li>Un frame è un contenitore e <b>può stare sopra altri livelli</b>: non è un errore. Si segnalano solo le <b>collisioni tra blocchi</b> di
+        gruppi diversi (zona tratteggiata in rosso), i blocchi <b>fuori dalla propria area</b> e quelli fuori dal display.</li>
+      <li>Un <b>clic sugli avvisi</b> sotto l'anteprima (o su «Dettagli dei problemi») porta al gruppo o frame responsabile e spiega il
+        motivo e come correggerlo; un altro clic passa al successivo. Se la sovrapposizione è voluta (es. un menu a comparsa) spunta
+        <b>Sovrapposizione voluta</b>.</li>
+    </ul>
+
+    <h3>Colonne di larghezza diversa</h3>
+    <p>Un gruppo con più blocchi affiancati è già una tabella: ogni <b>elemento</b> è una riga e ogni <b>blocco</b> è una colonna con la sua
+      larghezza (es. <i>Input</i> 150 px + <i>LED</i> 100 px, numero elementi = righe). Se hai già due gruppi con gli stessi elementi,
+      <b>Unisci con un altro gruppo…</b> li fonde in uno senza spostare nessun blocco, e indica il motivo se un gruppo non è compatibile.</p>
+
+    <h3>Esportare l'immagine</h3>
+    <p><b>Esporta immagine…</b> salva <b>tutto il display con tutti i livelli</b> (PNG o SVG, anche ×2/×3 o con sfondo trasparente),
+      solo l'oggetto selezionato, oppure <b>un file per ogni livello</b> in un archivio .zip. Gli avvisi dell'editor non compaiono
+      nell'immagine, salvo richiesta.</p>
+
     <h3>Coordinate per CODESYS</h3>
     <p>X e Y sono i valori da inserire nelle proprietà <i>Posizione → X, Y</i> degli elementi; <i>Larg.</i> e <i>Alt.</i>
       in larghezza e altezza. Con <b>Esporta… → CODESYS (ST)</b> ottieni una struttura (DUT) e una lista di
@@ -420,7 +504,8 @@
     <h3>Colori</h3>
     <p>Nelle celle colore scrivi un codice esadecimale (es. <code>CC0605</code>) o RAL (<code>RAL 3020</code> o solo <code>3020</code>);
       con un clic sul quadratino scegli dalla tabella dei 213 colori RAL Classic, con ricerca per codice o nome.
-      I valori esadecimali dei RAL sono indicativi. <b>Colori pieni</b> mostra l'anteprima con i colori reali.</p>
+      I valori esadecimali dei RAL sono indicativi. Senza selezione l'anteprima è sempre a colori pieni; con un oggetto selezionato
+      attiva <b>Colori pieni</b>.</p>
 
     <h3>Copiare i valori</h3>
     <ul>
@@ -429,6 +514,8 @@
       <li>Lettere di colonna e numeri di riga selezionano intere colonne o righe; <b>Ctrl+C</b> copia la selezione,
         <b>Ctrl+A</b> seleziona tutto.</li>
       <li>Passa il mouse su un oggetto dell'anteprima per vederne le coordinate; un clic lo seleziona.</li>
+      <li><b>Larghezza delle colonne</b>: trascina il bordo destro della lettera di colonna (doppio clic: adatta al contenuto). Il menu
+        <b>Colonne</b> nasconde Percorso, Riga, Colore… e lascia sempre X, Y, larghezza e altezza.</li>
     </ul>
 
     <h3>Celle come in Excel</h3>
@@ -459,9 +546,13 @@
 <script src="js/expr.js"></script>
 <script src="js/ral.js"></script>
 <script src="js/layout.js"></script>
+<script src="js/issues.js"></script>
 <script src="js/exporters.js"></script>
+<script src="js/zip.js"></script>
 <script src="js/storage.js"></script>
 <script src="js/icons.js"></script>
+<script src="js/menu.js"></script>
+<script src="js/tree.js"></script>
 <script src="js/sheet.js"></script>
 <script src="js/preview.js"></script>
 <script src="js/colorpicker.js"></script>

@@ -5,7 +5,14 @@
  *  - clic = seleziona (e, se attivo, copia) la cella; trascinamento o
  *    Maiusc+clic = intervallo; clic su lettere/numeri = colonne/righe intere;
  *  - tastiera: frecce, Maiusc+frecce, Ctrl+C, Ctrl+A, Esc, doppio clic = copia;
- *  - la copia produce testo separato da tabulazioni: si incolla in Excel.
+ *  - la copia produce testo separato da tabulazioni: si incolla in Excel;
+ *  - larghezza delle colonne personalizzabile: si trascina il bordo destro della lettera
+ *    di colonna, un doppio clic adatta la colonna al contenuto. Senza una larghezza
+ *    scelta, ogni colonna è larga quanto serve (nessuna cella "gonfiata").
+ *
+ * opts = { autoCopy(), onSelect(info, sheet), onHover(keys), onCopy(info),
+ *          widths: { chiave: px } oggetto condiviso e salvato dall'app,
+ *          keyPrefix(): prefisso della chiave (es. la vista), onWidths(): dopo una modifica }
  */
 (function () {
   'use strict';
@@ -44,8 +51,139 @@
     this.painted = [];
     this.hoverTr = null;
     this.dragging = null;
+    this.cols = [];
+    this.table = null;
     this._bind();
   }
+
+  var ROW_HEAD_W = 42, MIN_W = 28, MAX_W = 640;
+
+  function clampW(w) { return Math.max(MIN_W, Math.min(MAX_W, Math.round(w))); }
+
+  /*
+   * Larghezza naturale di una serie di testi, misurata nel DOM con gli stessi stili delle celle
+   * (cifre tabulari, grassetto dei valori X/Y e delle intestazioni): una sola misura per tutti.
+   * list = [{ t: testo, k: 'label' | 'coord' | 'num' | 'text' }]
+   */
+  function measureCells(list) {
+    var table = document.createElement('table');
+    table.className = 'grid';
+    table.setAttribute('aria-hidden', 'true');
+    table.style.cssText = 'position:absolute;left:-10000px;top:0;visibility:hidden;table-layout:auto;width:auto;pointer-events:none;';
+    var tbody = document.createElement('tbody');
+    var row = document.createElement('tr');
+    list.forEach(function (x) {
+      var td = document.createElement('td');
+      td.textContent = x.t;
+      td.style.cssText = 'height:auto;width:auto;overflow:visible;text-overflow:clip;' + (x.k === 'label' || x.k === 'coord' ? 'font-weight:600;' : '');
+      row.appendChild(td);
+    });
+    tbody.appendChild(row);
+    table.appendChild(tbody);
+    document.body.appendChild(table);
+    var out = Array.prototype.map.call(row.children, function (td) { return td.getBoundingClientRect().width; });
+    document.body.removeChild(table);
+    return out;
+  }
+
+  Sheet.prototype._wkey = function (c) {
+    var pre = this.opts.keyPrefix ? this.opts.keyPrefix() : '';
+    return pre + '|' + this.data.columns[c].label;
+  };
+
+  /* Larghezza che serve al contenuto di ogni colonna (intestazione e valori più lunghi), calcolata una volta. */
+  Sheet.prototype._autoWidths = function () {
+    if (this._auto) return this._auto;
+    var d = this.data, cands = [], index = [];
+    d.columns.forEach(function (col, c) {
+      var best = [];
+      for (var r = 0; r < d.rows.length; r++) {
+        var t = String(d.rows[r].values[c]);
+        if (best.length < 3 || t.length > best[best.length - 1].length) {
+          best.push(t);
+          best.sort(function (a, b) { return b.length - a.length; });
+          if (best.length > 3) best.pop();
+        }
+      }
+      index[c] = [cands.length];
+      cands.push({ t: col.label, k: 'label' });
+      best.forEach(function (t) { cands.push({ t: t, k: col.coord ? 'coord' : col.num ? 'num' : 'text' }); });
+      index[c].push(cands.length);
+    });
+    // stessi testi di prima → stesse larghezze, senza rimisurare (succede a ogni digitazione)
+    var sig = cands.map(function (x) { return x.k + ':' + x.t; }).join('\u0001');
+    if (sig === this._autoSig && this._autoVal) { this._auto = this._autoVal; return this._auto; }
+    var m = cands.length ? measureCells(cands) : [];
+    this._auto = index.map(function (ix) {
+      var w = 0;
+      for (var i = ix[0]; i < ix[1]; i++) w = Math.max(w, m[i]);
+      return clampW(Math.ceil(w) + 2);
+    });
+    this._autoSig = sig;
+    this._autoVal = this._auto;
+    return this._auto;
+  };
+
+  Sheet.prototype._autoWidth = function (c) { return this._autoWidths()[c]; };
+
+  Sheet.prototype._width = function (c) {
+    var stored = this.opts.widths ? this.opts.widths[this._wkey(c)] : null;
+    return typeof stored === 'number' && stored >= MIN_W ? clampW(stored) : this._autoWidth(c);
+  };
+
+  Sheet.prototype._applyWidths = function () {
+    if (!this.table) return;
+    var total = ROW_HEAD_W;
+    for (var c = 0; c < this.cols.length; c++) {
+      var w = this._width(c);
+      this.cols[c].style.width = w + 'px';
+      total += w;
+    }
+    this.table.style.width = total + 'px';
+  };
+
+  Sheet.prototype._setWidth = function (c, w) {
+    if (!this.opts.widths) return;
+    this.opts.widths[this._wkey(c)] = clampW(w);
+  };
+
+  /* Adatta tutte le colonne al contenuto e memorizza la scelta. */
+  Sheet.prototype.fitAll = function () {
+    if (!this.data) return;
+    for (var c = 0; c < this.data.columns.length; c++) this._setWidth(c, this._autoWidth(c));
+    this._applyWidths();
+    if (this.opts.onWidths) this.opts.onWidths();
+  };
+
+  /* Torna alle larghezze automatiche. */
+  Sheet.prototype.resetWidths = function () {
+    if (!this.data || !this.opts.widths) return;
+    for (var c = 0; c < this.data.columns.length; c++) delete this.opts.widths[this._wkey(c)];
+    this._applyWidths();
+    if (this.opts.onWidths) this.opts.onWidths();
+  };
+
+  Sheet.prototype._startResize = function (c, e) {
+    var self = this, startX = e.clientX, startW = this._width(c), grip = e.target;
+    e.preventDefault();
+    e.stopPropagation();
+    this.el.classList.add('resizing');
+    try { grip.setPointerCapture(e.pointerId); } catch (x) { /* non essenziale */ }
+    function move(ev) {
+      self._setWidth(c, startW + ev.clientX - startX);
+      self._applyWidths();
+    }
+    function up() {
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', up);
+      grip.removeEventListener('pointercancel', up);
+      self.el.classList.remove('resizing');
+      if (self.opts.onWidths) self.opts.onWidths();
+    }
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up);
+    grip.addEventListener('pointercancel', up);
+  };
 
   Sheet.prototype.setData = function (data) {
     this.data = data;
@@ -64,6 +202,17 @@
     var d = this.data;
     var table = document.createElement('table');
     table.className = 'grid';
+    var colgroup = document.createElement('colgroup');
+    var rhCol = document.createElement('col');
+    rhCol.style.width = ROW_HEAD_W + 'px';
+    colgroup.appendChild(rhCol);
+    this.cols = d.columns.map(function () {
+      var col = document.createElement('col');
+      colgroup.appendChild(col);
+      return col;
+    });
+    table.appendChild(colgroup);
+    this.table = table;
 
     var thead = document.createElement('thead');
     var htr = document.createElement('tr');
@@ -78,7 +227,12 @@
       th.setAttribute('data-k', 'col');
       th.setAttribute('data-c', c);
       th.textContent = colName(c);
-      th.title = 'Seleziona la colonna «' + col.label + '»';
+      th.title = 'Seleziona la colonna «' + col.label + '» · trascina il bordo destro per cambiarne la larghezza (doppio clic: adatta)';
+      var grip = document.createElement('span');
+      grip.className = 'col-grip';
+      grip.setAttribute('data-c', c);
+      grip.title = 'Trascina per cambiare la larghezza · doppio clic: adatta al contenuto';
+      th.appendChild(grip);
       htr.appendChild(th);
       return th;
     });
@@ -109,8 +263,10 @@
           td.textContent = col.label;
           if (col.title) td.title = col.title;
         } else {
-          td.textContent = String(d.rows[r - 1].values[c]);
+          var text = String(d.rows[r - 1].values[c]);
+          td.textContent = text;
           if (col.num) td.className = col.coord ? 'num coord' : 'num';
+          else if (text.length > 12) td.title = text;
         }
         tr.appendChild(td);
         rowCells.push(td);
@@ -138,6 +294,8 @@
     }
     this.painted = [];
     this.hoverTr = null;
+    this._auto = null;
+    this._applyWidths();
   };
 
   Sheet.prototype._range = function () {
@@ -262,8 +420,15 @@
   Sheet.prototype._bind = function () {
     var self = this;
 
+    this.el.addEventListener('pointerdown', function (e) {
+      var grip = e.target.closest ? e.target.closest('.col-grip') : null;
+      if (!grip || e.button !== 0 || !self.data) return;
+      self._startResize(+grip.getAttribute('data-c'), e);
+    });
+
     this.el.addEventListener('mousedown', function (e) {
       if (e.button !== 0 || !self.data) return;
+      if (e.target.closest && e.target.closest('.col-grip')) { e.preventDefault(); return; }
       var t = e.target.closest ? e.target.closest('td, th') : null;
       if (!t || !self.el.contains(t)) return;
       var h = self._hit(t);
@@ -291,6 +456,14 @@
     });
 
     this.el.addEventListener('dblclick', function (e) {
+      var grip = e.target.closest ? e.target.closest('.col-grip') : null;
+      if (grip && self.data) {
+        var c = +grip.getAttribute('data-c');
+        self._setWidth(c, self._autoWidth(c));
+        self._applyWidths();
+        if (self.opts.onWidths) self.opts.onWidths();
+        return;
+      }
       var t = e.target.closest ? e.target.closest('td') : null;
       if (!t || !self.sel) return;
       if (!(self.opts.autoCopy && self.opts.autoCopy())) self.copy('dblclick');
