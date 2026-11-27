@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const L = require('../js/layout.js');
+const { layers: layersConfig, sf: sfConfig } = require('./fixtures.js');
 
 function compute(mutate) {
   const cfg = L.defaultConfig();
@@ -160,13 +161,217 @@ test('frame "riempie l\'area" con gruppo interno e figli fuori dal frame', () =>
   assert.ok(!blocks[7].outArea);
 });
 
-test('sovrapposizioni tra frame e gruppi esterni', () => {
+/* Un gruppo "Esterno" (blocco 20×20 a 30,40) sopra il contenuto del frame Motore. */
+function withExternal(extra) {
   const cfg = motorConfig();
-  cfg.nodes.push({ id: 'x', type: 'group', name: 'Esterno', area: { top: 40, bottom: 0, left: 30, right: 0 }, blocks: [{ name: 'B', width: 20, height: 20, gap: 0 }], count: 1, columns: 1, order: 'rows', rowGap: 0, colGap: 0, alignH: 'start', alignV: 'start', direction: 'h' });
-  const res = L.computeLayout(L.normalizeConfig(cfg));
+  cfg.nodes.push(Object.assign({
+    id: 'x', type: 'group', name: 'Esterno', area: { top: 40, bottom: 0, left: 30, right: 0 },
+    blocks: [{ name: 'B', width: 20, height: 20, gap: 0 }], count: 1, columns: 1, order: 'rows',
+    rowGap: 0, colGap: 0, alignH: 'start', alignV: 'start', direction: 'h'
+  }, extra));
+  return L.computeLayout(L.normalizeConfig(cfg));
+}
+
+/* ----------------------------------------------- sovrapposizioni e livelli */
+
+test('un blocco che copre un blocco di un frame è una collisione; il frame no', () => {
+  const res = withExternal();
   const ext = res.items.find((it) => it.node === 'x');
-  assert.ok(ext.overlap);
-  assert.ok(res.items.find((it) => it.key === 'f#1').overlap);
+  assert.ok(ext.overlap, 'il blocco esterno copre il primo "Start"');
+  assert.ok(!res.items.find((it) => it.key === 'f#1').overlap, 'un frame è un contenitore: mai segnalato');
+  assert.equal(res.overlapPairs.length, 1);
+  const p = res.overlapPairs[0];
+  assert.deepEqual([p.a, p.b], ['f#1/g:1:0', 'x:1:0'], 'a = sotto, b = sopra (disegnato dopo)');
+  assert.deepEqual([p.nodeA, p.nodeB], ['g', 'x']);
+  assert.deepEqual([p.x, p.y, p.w, p.h], [30, 40, 20, 20], 'rettangolo in comune');
+});
+
+test('sovrapposizione voluta: non viene segnalata (anche ereditata da un frame)', () => {
+  assert.equal(withExternal({ allowOverlap: true }).totals.overlaps, 0);
+  const cfg = motorConfig();
+  cfg.nodes[0].allowOverlap = true; // il frame Motore e tutto il suo contenuto
+  cfg.nodes.push({ id: 'x', type: 'group', name: 'Esterno', area: { top: 40, left: 30 }, blocks: [{ width: 20, height: 20 }], count: 1 });
+  const res = L.computeLayout(L.normalizeConfig(cfg));
+  assert.equal(res.totals.overlapPairs, 0);
+  assert.equal(res.items.find((it) => it.node === 'g').allow, true);
+});
+
+test('livelli: tre frame a schermo intero non generano falsi allarmi', () => {
+  const res = L.computeLayout(layersConfig());
+  // prima: ogni oggetto che toccava un frame "non suo" risultava sovrapposto (32 su 29 blocchi + 3 frame)
+  assert.equal(res.totals.overlapPairs, 1, 'solo la barra (70–620) e il primo pulsante (611) si toccano davvero');
+  assert.equal(res.totals.overlaps, 2);
+  assert.ok(res.items.filter((it) => it.kind === 'frame').every((f) => !f.overlap));
+  const p = res.overlapPairs[0];
+  assert.deepEqual([p.x, p.y, p.w, p.h], [611, 417, 9, 60]);
+  assert.equal(res.nodes.pop.out.area, 2, 'su 234 px di altezza entrano 3 pulsanti da 60, non 5');
+  assert.equal(res.nodes.pop.contexts[0].fit.rows, 3);
+  assert.equal(res.nodes.pop.contexts[0].free.h, -78);
+});
+
+test('sfondo dei frame: automatico, pieno o trasparente', () => {
+  const frames = (res) => Object.fromEntries(res.items.filter((it) => it.kind === 'frame').map((f) => [f.node, f]));
+  let f = frames(L.computeLayout(layersConfig()));
+  assert.equal(f.bg.transparent, false, 'il primo livello non copre nulla: resta pieno');
+  assert.equal(f.menu.fill, 'auto');
+  assert.equal(f.menu.transparent, true, 'automatico: nasconderebbe i blocchi di "sfondo"');
+  assert.equal(f.menu.covers, 5);
+  assert.equal(f.page.transparent, false, 'la pagina non copre blocchi');
+  f = frames(L.computeLayout(layersConfig(false)));
+  assert.equal(f.menu.transparent, false, 'pieno: lo decide l\'utente');
+  assert.equal(f.menu.covers, 5, 'e la diagnostica può dire quanti oggetti nasconde');
+  f = frames(L.computeLayout(layersConfig(true)));
+  assert.equal(f.menu.transparent, true);
+  assert.equal(f.menu.covers, 0);
+});
+
+test('nodi nascosti: restano nel calcolo ma sono marcati (anche i discendenti)', () => {
+  const cfg = layersConfig();
+  cfg.nodes[0].hidden = true;
+  const res = L.computeLayout(cfg);
+  assert.ok(res.items.filter((it) => it.node === 'bg' || it.node === 'alm').every((it) => it.hidden));
+  assert.ok(res.items.filter((it) => it.node === 'page').every((it) => !it.hidden));
+  assert.equal(res.totals.overlapPairs, 1, 'le segnalazioni non dipendono dalla visibilità');
+  const back = L.normalizeConfig(JSON.parse(JSON.stringify(cfg)));
+  assert.equal(back.nodes[0].hidden, true);
+  assert.equal('hidden' in back.nodes[1], false, 'proprietà salvate solo se impostate');
+});
+
+test('ordine dei livelli come in PowerPoint', () => {
+  const cfg = layersConfig();
+  const ids = () => cfg.nodes.map((n) => n.id).join();
+  assert.equal(ids(), 'bg,menu,page');
+  assert.equal(L.reorder(cfg, 'bg', 'front'), true);
+  assert.equal(ids(), 'menu,page,bg');
+  assert.equal(L.reorder(cfg, 'bg', 'front'), false, 'già in primo piano');
+  assert.equal(L.reorder(cfg, 'bg', 'backward'), true);
+  assert.equal(ids(), 'menu,bg,page');
+  assert.equal(L.reorder(cfg, 'bg', 'forward'), true);
+  assert.equal(ids(), 'menu,page,bg');
+  assert.equal(L.reorder(cfg, 'bg', 'back'), true);
+  assert.equal(ids(), 'bg,menu,page');
+  assert.equal(L.reorder(cfg, 'menu', 'sideways'), false);
+  // elenco dei livelli: in alto il primo piano
+  assert.deepEqual(L.listNodesFront(cfg).slice(0, 3).map((x) => x.node.id), ['page', 'inp', 'menu']);
+  assert.deepEqual(L.listNodesFront(cfg).map((x) => x.depth).slice(0, 3), [0, 1, 0]);
+  // il disegno segue lo stesso ordine: l'ultimo è il più vicino
+  L.reorder(cfg, 'page', 'back');
+  const z = (id) => L.computeLayout(cfg).items.find((it) => it.node === id).z;
+  assert.ok(z('page') < z('bg') && z('bg') < z('menu'));
+});
+
+/* ------------------------------------------------ spostamento (trascinamento) */
+
+test('moveNode: posizione nell\'elenco e cambio di contenitore', () => {
+  const cfg = layersConfig();
+  assert.equal(L.moveNode(cfg, 'menu', '', 0).ok, true);
+  assert.equal(cfg.nodes.map((n) => n.id).join(), 'menu,bg,page');
+  assert.equal(L.moveNode(cfg, 'menu', '', 3).ok, true, 'in fondo = primo piano');
+  assert.equal(cfg.nodes.map((n) => n.id).join(), 'bg,page,menu');
+  const r = L.moveNode(cfg, 'logo', 'page', 0);
+  assert.deepEqual([r.ok, r.changedContainer], [true, true]);
+  assert.equal(L.findNode(cfg, 'page').node.children[0].id, 'logo');
+  const bad = L.moveNode(cfg, 'page', 'page', 0);
+  assert.equal(bad.ok, false);
+  assert.match(bad.reason, /dentro se stesso/);
+  assert.equal(L.moveNode(cfg, 'bg', 'inp', 0).ok, false, 'si può inserire solo dentro un frame');
+  assert.equal(L.canMove(cfg, 'inp', ''), '');
+});
+
+test('moveNode: con keepPosition l\'oggetto resta dov\'è sul display', () => {
+  const cfg = layersConfig();
+  const before = L.computeLayout(cfg).items.filter((it) => it.node === 'inp').map((b) => [b.x, b.y]);
+  const r = L.moveNode(cfg, 'inp', 'bg', 99, { keepPosition: true });
+  assert.deepEqual([r.ok, r.exact, r.kept], [true, true, true]);
+  const moved = L.findNode(cfg, 'inp').node;
+  assert.deepEqual(moved.area, { top: 63 + 0, left: 0, bottom: 63, right: 63 }, 'offset ricalcolati rispetto al nuovo contenitore');
+  const after = L.computeLayout(cfg).items.filter((it) => it.node === 'inp').map((b) => [b.x, b.y]);
+  assert.deepEqual(after, before);
+  // verso un frame più piccolo: la regione non entra, gli offset si limitano e lo si segnala
+  const cfg2 = layersConfig();
+  L.findNode(cfg2, 'menu').node.area = { top: 200, bottom: 200, left: 300, right: 300 };
+  const r2 = L.moveNode(cfg2, 'bg', 'menu', 0, { keepPosition: true });
+  assert.equal(r2.ok, true);
+  assert.equal(r2.exact, false);
+});
+
+test('frame fisso ripetuto: la posizione si ricalcola sulla prima copia', () => {
+  const cfg = motorConfig();
+  // regione 30,40 → 380,190: sta dentro la prima copia del frame (20,30 → 390,210)
+  cfg.nodes.push({ id: 'x', type: 'group', name: 'Esterno', area: { top: 40, left: 30, right: 420, bottom: 290 }, blocks: [{ width: 20, height: 20 }], count: 1 });
+  const norm = L.normalizeConfig(cfg);
+  const before = L.computeLayout(norm).items.find((it) => it.node === 'x');
+  const r = L.moveNode(norm, 'x', 'f', 0, { keepPosition: true });
+  assert.deepEqual([r.ok, r.exact], [true, true]);
+  const copies = L.computeLayout(norm).items.filter((it) => it.node === 'x');
+  assert.equal(copies.length, 4, 'ora il gruppo è ripetuto in ogni copia del frame');
+  assert.deepEqual([copies[0].x, copies[0].y], [before.x, before.y], 'la prima copia resta dov\'era');
+  assert.deepEqual(L.findNode(norm, 'x').node.area, { top: 10, left: 10, right: 10, bottom: 20 });
+});
+
+/* ---------------------------------------------------------- unione gruppi */
+
+function rects(cfg) {
+  return L.computeLayout(cfg).items.filter((it) => it.kind === 'block')
+    .map((b) => [b.name, b.n, b.x, b.y, b.w, b.h].join()).sort();
+}
+
+test('unire due gruppi: dato + LED diventano due colonne di larghezza diversa nello stesso elemento', () => {
+  const cfg = sfConfig();
+  const before = rects(cfg);
+  const cands = L.mergeCandidates(cfg, 'in');
+  assert.deepEqual(cands.map((c) => [c.id, c.ok]), [['out', false], ['inl', true], ['outl', false]]);
+  assert.match(cands[0].reason, /Numero di elementi diverso \(5 e 3\)/);
+
+  const r = L.mergeGroups(cfg, 'in', 'inl');
+  assert.equal(r.ok, true);
+  const kids = L.findNode(cfg, 'p').node.children;
+  assert.deepEqual(kids.map((c) => c.id), ['in', 'out', 'outl'], 'il secondo gruppo sparisce, il primo resta al suo posto');
+  assert.deepEqual(kids[0].blocks.map((b) => [b.name, b.width, b.gap]), [['Input SF', 150, 0], ['LED', 100, 5]]);
+
+  // lato uscite: il LED sta a sinistra del dato e il gruppo è allineato a destra
+  const r2 = L.mergeGroups(cfg, 'out', 'outl');
+  assert.equal(r2.ok, true);
+  const out = L.findNode(cfg, 'out').node;
+  assert.deepEqual(out.blocks.map((b) => [b.name, b.width, b.gap]), [['LED', 100, 0], ['Output SF', 150, 5]]);
+  assert.deepEqual(out.area, { top: 0, bottom: 0, left: 0, right: 0 });
+  assert.deepEqual(rects(cfg), before, 'ogni blocco resta esattamente dov\'era');
+  assert.equal(L.countNodes(cfg.nodes), 3);
+});
+
+test('unione rifiutata con il motivo quando le posizioni non coinciderebbero', () => {
+  const cfg = sfConfig();
+  L.findNode(cfg, 'inl').node.rowGap = 20;
+  const r = L.mergeGroups(cfg, 'in', 'inl');
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /non compatibili/);
+  assert.equal(L.countNodes(cfg.nodes), 5, 'la configurazione non cambia');
+  assert.equal(L.mergeGroups(cfg, 'in', 'in').ok, false);
+  assert.equal(L.mergeGroups(cfg, 'in', 'p').ok, false);
+});
+
+test('unione con blocchi di altezza diversa: allineamento al centro', () => {
+  const cfg = sfConfig();
+  const inl = L.findNode(cfg, 'inl').node;
+  inl.blocks[0].height = 30;
+  inl.rowGap = 30; // stesso passo delle righe degli ingressi (50 + 10)
+  const before = rects(cfg);
+  assert.equal(L.mergeGroups(cfg, 'in', 'inl').ok, true);
+  assert.deepEqual(rects(cfg), before);
+});
+
+test('unione: l\'allineamento trasversale viene dedotto dalle posizioni (blocchi in alto)', () => {
+  const cfg = sfConfig();
+  L.findNode(cfg, 'in').node.alignV = 'start';
+  const inl = L.findNode(cfg, 'inl').node;
+  inl.alignV = 'start';
+  inl.blocks[0].height = 30;
+  inl.rowGap = 30;
+  const before = rects(cfg);
+  const r = L.mergeGroups(cfg, 'in', 'inl');
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.node.blocks.map((b) => b.align), ['start', 'start']);
+  assert.deepEqual(rects(cfg), before);
 });
 
 test('nodi dentro un frame senza copie restano senza contesti', () => {

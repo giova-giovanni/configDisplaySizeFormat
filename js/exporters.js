@@ -59,11 +59,32 @@
    * Restituisce un elenco di fogli { title, node, columns[], rows[] }.
    *   columns[i] = { label, field, num, coord, blockIdx, title }
    *   rows[i]    = { values[], keys[] (oggetti della riga), warn, kind }
-   * opts = { view: 'long'|'wide', coord: 'frame'|'display', nodes: {id: true} }
+   * opts = { view: 'long'|'wide', coord: 'frame'|'display', nodes: {id: true},
+   *          sizes: true  (vista "per elemento": anche larghezza e altezza di ogni blocco),
+   *          hide: { path, ctx, n, row, col, color: true }  colonne da nascondere }
    */
   function buildSheets(result, opts) {
+    return dropColumns(buildSheetsFull(result, opts), opts && opts.hide);
+  }
+
+  /* Colonne descrittive che si possono nascondere (X, Y, larghezza, altezza e nome restano sempre). */
+  var HIDEABLE = ['path', 'ctx', 'n', 'row', 'col', 'color'];
+
+  function dropColumns(sheets, hide) {
+    if (!hide) return sheets;
+    sheets.forEach(function (s) {
+      var keep = s.columns.map(function (c) { return !(HIDEABLE.indexOf(c.field) !== -1 && hide[c.field]); });
+      if (keep.every(Boolean)) return;
+      s.columns = s.columns.filter(function (c, i) { return keep[i]; });
+      s.rows.forEach(function (r) { r.values = r.values.filter(function (v, i) { return keep[i]; }); });
+    });
+    return sheets;
+  }
+
+  function buildSheetsFull(result, opts) {
     opts = opts || {};
     var coord = coordOf(opts);
+    var sizes = !!opts.sizes;
     var items = pickItems(result, opts);
     var showPath = result.hasFrames || result.order.length > 1;
     var xTitle = coord === 'display' ? 'rispetto al display' : 'rispetto al frame che lo contiene (o al display)';
@@ -90,6 +111,10 @@
             var title = name + ': ' + size.w + ' × ' + size.h + ' px, ' + xTitle;
             columns.push({ label: name + ' X', field: 'x', blockIdx: bi, num: true, coord: true, title: title });
             columns.push({ label: name + ' Y', field: 'y', blockIdx: bi, num: true, coord: true, title: title });
+            if (sizes) {
+              columns.push({ label: name + ' Larg.', field: 'w', blockIdx: bi, num: true, title: name + ': larghezza (px)' });
+              columns.push({ label: name + ' Alt.', field: 'h', blockIdx: bi, num: true, title: name + ': altezza (px)' });
+            }
           });
           contexts.forEach(function (c) {
             c.items.forEach(function (el) {
@@ -98,6 +123,7 @@
               values.push(el.n, el.row, el.col);
               el.blocks.forEach(function (b) {
                 values.push(X(b, coord), Y(b, coord));
+                if (sizes) values.push(b.w, b.h);
                 if (hasWarning(b)) warn = true;
               });
               rows.push({ values: values, keys: el.blocks.map(function (b) { return b.key; }), warn: warn, kind: 'block' });
@@ -390,6 +416,7 @@
 
   return {
     buildSheets: buildSheets,
+    HIDEABLE: HIDEABLE,
     cellText: cellText,
     sheetsToTSV: sheetsToTSV,
     sheetsToCSV: sheetsToCSV,

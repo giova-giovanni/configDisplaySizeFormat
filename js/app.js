@@ -10,6 +10,7 @@
 
   var DLC = window.DLC;
   var L = DLC.layout, X = DLC.exporters, S = DLC.storage, E = DLC.editor, R = DLC.ral;
+  var I = DLC.issues, Z = DLC.zip, M = DLC.menu;
   var LIM = L.LIMITS;
   var APP_ID = 'configuratore-layout-display';
 
@@ -46,7 +47,7 @@
 
   function defaultUI() {
     return {
-      selected: '',
+      selected: null,        // null = mai scelto (si seleziona il primo oggetto), '' = nessuna selezione
       view: 'long',
       coord: 'frame',
       zoom: 'fit',
@@ -54,19 +55,24 @@
       showNames: true,
       showCoords: true,
       solid: false,
+      focusDim: true,
       autoCopy: true,
       onlyActive: false,
+      sizes: true,
+      colWidths: {},
+      hiddenCols: {},
       theme: 'auto',
       accent: DEFAULT_ACCENT,
-      exp: { fmt: 'tsv', table: 'long', headers: true, sep: ';', stType: 'ST_VisuRect', stBase: 1, stConst: true, scope: 'all', coord: 'frame' }
+      exp: { fmt: 'tsv', table: 'long', headers: true, sep: ';', stType: 'ST_VisuRect', stBase: 1, stConst: true, scope: 'all', coord: 'frame', sizes: true },
+      img: { scope: 'all', format: 'png', pixels: 1, solid: true, names: true, coords: false, grid: false, problems: false, frameOutline: true, coord: 'frame', bg: 'white' }
     };
   }
 
-  var state = { config: null, ui: null, result: null, itemMap: {}, sheetsData: [] };
+  var state = { config: null, ui: null, result: null, itemMap: {}, sheetsData: [], issues: [], issuePanel: null, issueCursor: {}, issueActive: '' };
   var hist = { past: [], future: [], last: '' };
   var fields = [];
   var sheets = [];
-  var preview = null, blockTable = null, frameColor = null;
+  var preview = null, tree = null, blockTable = null, frameColor = null;
   var raf = 0, draftTimer = 0, uiTimer = 0, toastTimer = 0;
 
   /* ------------------------------------------------------------------ */
@@ -97,17 +103,22 @@
     return DLC.slug(cfg().name) + '_' + cfg().display.width + 'x' + cfg().display.height;
   }
 
-  /* Nodo selezionato nella struttura (sempre valido). */
+  /* Nodo selezionato nella struttura, oppure null se non c'è nessuna selezione
+     (in quel caso l'anteprima mostra tutto con i colori reali). */
   function selInfo() {
-    var f = L.findNode(cfg(), state.ui.selected);
-    if (!f) {
-      state.ui.selected = cfg().nodes[0].id;
-      f = L.findNode(cfg(), state.ui.selected);
-    }
+    var id = state.ui.selected;
+    if (!id) return null;
+    var f = L.findNode(cfg(), id);
+    if (!f) state.ui.selected = '';
     return f;
   }
-  function sel() { return selInfo().node; }
-  function selEntry() { return state.result ? state.result.nodes[sel().id] : null; }
+  function sel() { var f = selInfo(); return f ? f.node : null; }
+  function selEntry() { var n = sel(); return n && state.result ? state.result.nodes[n.id] : null; }
+
+  /* Valore di un campo dell'oggetto selezionato (stringa vuota se non c'è). */
+  function ofSel(fn, fallback) {
+    return function () { var n = sel(); return n ? fn(n) : (fallback == null ? '' : fallback); };
+  }
 
   function coordMode() {
     return state.result && state.result.hasFrames ? state.ui.coord : 'display';
@@ -124,11 +135,20 @@
     if (u.view === 'long' || u.view === 'wide') d.view = u.view;
     if (u.coord === 'frame' || u.coord === 'display') d.coord = u.coord;
     if (ZOOMS.indexOf(String(u.zoom)) !== -1) d.zoom = String(u.zoom);
-    ['showGrid', 'showNames', 'showCoords', 'solid', 'autoCopy', 'onlyActive'].forEach(function (k) {
+    ['showGrid', 'showNames', 'showCoords', 'solid', 'focusDim', 'autoCopy', 'onlyActive', 'sizes'].forEach(function (k) {
       if (typeof u[k] === 'boolean') d[k] = u[k];
     });
     if (THEMES.indexOf(u.theme) !== -1) d.theme = u.theme;
     d.accent = L.cleanColor(u.accent, DEFAULT_ACCENT);
+    if (u.colWidths && typeof u.colWidths === 'object') {
+      Object.keys(u.colWidths).slice(0, 200).forEach(function (k) {
+        var w = u.colWidths[k];
+        if (typeof w === 'number' && isFinite(w) && w >= 20 && w <= 800 && k.length < 80) d.colWidths[k] = Math.round(w);
+      });
+    }
+    if (u.hiddenCols && typeof u.hiddenCols === 'object') {
+      X.HIDEABLE.forEach(function (k) { if (u.hiddenCols[k] === true) d.hiddenCols[k] = true; });
+    }
     var x = u.exp;
     if (x && typeof x === 'object') {
       if (FORMATS.some(function (f) { return f[0] === x.fmt; })) d.exp.fmt = x.fmt;
@@ -140,6 +160,18 @@
       if (typeof x.stConst === 'boolean') d.exp.stConst = x.stConst;
       if (x.scope === 'all' || x.scope === 'active') d.exp.scope = x.scope;
       if (x.coord === 'frame' || x.coord === 'display') d.exp.coord = x.coord;
+      if (typeof x.sizes === 'boolean') d.exp.sizes = x.sizes;
+    }
+    var im = u.img;
+    if (im && typeof im === 'object') {
+      if (['all', 'sel', 'layers'].indexOf(im.scope) !== -1) d.img.scope = im.scope;
+      if (im.format === 'png' || im.format === 'svg') d.img.format = im.format;
+      if ([1, 2, 3].indexOf(im.pixels) !== -1) d.img.pixels = im.pixels;
+      ['solid', 'names', 'coords', 'grid', 'problems', 'frameOutline'].forEach(function (k) {
+        if (typeof im[k] === 'boolean') d.img[k] = im[k];
+      });
+      if (im.coord === 'frame' || im.coord === 'display') d.img.coord = im.coord;
+      if (im.bg === 'white' || im.bg === 'none') d.img.bg = im.bg;
     }
     return d;
   }
@@ -251,6 +283,7 @@
     state.result = L.computeLayout(state.config);
     state.itemMap = {};
     state.result.items.forEach(function (it) { state.itemMap[it.key] = it; });
+    state.issues = I.build(state.config, state.result);
     renderTree();
     renderNodeInfo();
     syncPreset();
@@ -264,7 +297,8 @@
     fields.forEach(function (f) {
       if (document.activeElement !== f.el) f.el.value = f.get();
     });
-    if (frameColor && sel().type === 'frame' && document.activeElement !== $('frame-color')) frameColor.refresh();
+    var n = sel();
+    if (frameColor && n && n.type === 'frame' && document.activeElement !== $('frame-color')) frameColor.refresh();
   }
 
   /* --- struttura ----------------------------------------------------- */
@@ -278,58 +312,36 @@
     return (c ? c.count : 0) + ' el.';
   }
 
-  function renderTree() {
-    var host = $('tree');
-    var hadFocus = document.activeElement && document.activeElement.classList.contains('tree-row');
-    host.textContent = '';
-    var d = cfg().display;
-    var root = el('div', 'tree-root');
-    root.innerHTML = DLC.icons.get('display');
-    root.appendChild(el('span', null, 'Display ' + d.width + ' × ' + d.height + ' px'));
-    host.appendChild(root);
-    var focusRow = null;
-    L.listNodes(cfg()).forEach(function (x) {
-      var n = x.node, e = state.result.nodes[n.id], selected = n.id === state.ui.selected;
-      var row = el('button', 'tree-row' + (selected ? ' sel' : '') + (n.type === 'frame' ? ' is-frame' : ''));
-      row.type = 'button';
-      row.setAttribute('role', 'treeitem');
-      row.setAttribute('aria-level', String(x.depth + 1));
-      row.setAttribute('aria-selected', String(selected));
-      row.style.paddingLeft = (10 + (x.depth + 1) * 16) + 'px';
-      row.innerHTML = DLC.icons.get(n.type === 'frame' ? 'frame' : 'group');
-      var dot = el('span', 'dot');
-      dot.style.background = n.type === 'frame' ? n.color : n.blocks[0].color;
-      row.appendChild(dot);
-      row.appendChild(el('span', 'tree-name', n.name));
-      row.appendChild(el('span', 'tree-meta', nodeMeta(n, e)));
-      if (e && (e.out.area || e.items.some(function (it) { return it.overlap; }))) {
-        var w = el('span', 'tree-warn');
-        w.innerHTML = DLC.icons.get('warn');
-        w.title = 'Ci sono oggetti fuori dall\'area o sovrapposti';
-        row.appendChild(w);
-      }
-      row.title = n.type === 'frame' ? 'Frame: contenitore di altri gruppi e frame' : 'Gruppo di elementi';
-      row.addEventListener('click', function () { select(n.id); });
-      if (selected) focusRow = row;
-      host.appendChild(row);
-    });
-    if (hadFocus && focusRow) focusRow.focus();
+  function issuesOf(id) {
+    return state.issues.filter(function (i) { return i.nodes.indexOf(id) !== -1; });
+  }
 
-    var info = selInfo(), total = L.countNodes(cfg().nodes);
-    $('btn-node-up').disabled = info.index === 0;
-    $('btn-node-down').disabled = info.index === info.list.length - 1;
-    $('btn-node-del').disabled = total <= 1;
-    $('btn-node-dup').disabled = total + L.countNodes([info.node]) > LIM.maxNodes;
-    $('btn-node-wrap').disabled = total >= LIM.maxNodes || info.depth + 1 + L.subtreeHeight(info.node) > LIM.maxDepth;
+  function renderTree() {
+    tree.render();
+    var info = selInfo(), total = L.countNodes(cfg().nodes), has = !!info;
+    var atFront = !has || info.index === info.list.length - 1, atBack = !has || info.index === 0;
+    $('btn-node-front').disabled = atFront;
+    $('btn-node-up').disabled = atFront;
+    $('btn-node-down').disabled = atBack;
+    $('btn-node-back').disabled = atBack;
+    $('btn-node-del').disabled = !has || total <= 1;
+    $('btn-node-dup').disabled = !has || total + L.countNodes([info.node]) > LIM.maxNodes;
+    $('btn-node-wrap').disabled = !has || total >= LIM.maxNodes || info.depth + 1 + L.subtreeHeight(info.node) > LIM.maxDepth;
     $('btn-add-group').disabled = total >= LIM.maxNodes;
     $('btn-add-frame').disabled = total >= LIM.maxNodes ||
-      (info.node.type === 'frame' ? info.depth + 1 : info.depth) > LIM.maxDepth;
+      (has && (info.node.type === 'frame' ? info.depth + 1 : info.depth) > LIM.maxDepth);
   }
 
   /* --- editor del nodo selezionato --------------------------------- */
 
+  function fillOf(n) { return n.transparent === true ? 'none' : n.transparent === false ? 'solid' : 'auto'; }
+
   function renderNodeEditor() {
-    var info = selInfo(), n = info.node, isFrame = n.type === 'frame';
+    var info = selInfo(), n = info ? info.node : null;
+    $('node-panel').hidden = !n;
+    $('node-empty').hidden = !!n;
+    if (!n) return;
+    var isFrame = n.type === 'frame';
     var kind = $('node-kind');
     kind.textContent = isFrame ? 'Frame' : 'Gruppo';
     kind.className = 'kind-badge ' + (isFrame ? 'frame' : 'group');
@@ -337,11 +349,12 @@
     var parentSel = $('node-parent');
     parentSel.textContent = '';
     L.containers(cfg(), n.id).forEach(function (c) {
-      var o = el('option', null, c.depth < 0 ? 'Display' : new Array(c.depth + 2).join('  ') + '▣ ' + c.name);
+      var o = el('option', null, c.depth < 0 ? 'Display' : new Array(c.depth + 2).join('  ') + '▣ ' + c.name);
       o.value = c.id;
       parentSel.appendChild(o);
     });
     parentSel.value = info.parent ? info.parent.id : '';
+    $('opt-allow').checked = !!n.allowOverlap;
 
     $('area-sub').textContent = info.parent ? 'offset dai bordi del frame «' + info.parent.name + '»' : 'offset dai bordi del display';
     $('sec-blocks').hidden = isFrame;
@@ -360,6 +373,11 @@
       b.classList.toggle('on', on);
       b.setAttribute('aria-checked', String(on));
     });
+    Array.prototype.forEach.call(document.querySelectorAll('#frame-fill-seg button'), function (b) {
+      var on = isFrame && b.getAttribute('data-fill') === fillOf(n);
+      b.classList.toggle('on', on);
+      b.setAttribute('aria-checked', String(on));
+    });
     if (isFrame) {
       $('frame-size').hidden = n.mode !== 'fixed';
       frameColor.refresh();
@@ -373,8 +391,59 @@
     return p;
   }
 
+  /* Quando nulla è selezionato: riepilogo di tutta la pagina. */
+  function renderEmptyState() {
+    var box = $('empty-summary'), t = state.result.totals, frames = 0, groups = 0;
+    box.textContent = '';
+    L.walk(cfg().nodes, function (n) { if (n.type === 'frame') frames++; else groups++; });
+    box.appendChild(fitLine('Struttura', frames + ' ' + plural(frames, 'frame', 'frame') + ' · ' + groups + ' ' + plural(groups, 'gruppo', 'gruppi')));
+    box.appendChild(fitLine('Contenuto', t.elements + ' ' + plural(t.elements, 'elemento', 'elementi') + ' · ' + t.blocks + ' ' + plural(t.blocks, 'blocco', 'blocchi')));
+    var tot = I.totals(state.issues), parts = [];
+    if (tot['out-display'].issues + tot['bad-area'].issues) parts.push((tot['out-display'].issues + tot['bad-area'].issues) + ' da correggere');
+    if (tot['out-area'].issues) parts.push(tot['out-area'].issues + ' fuori area');
+    if (tot.overlap.issues) parts.push(tot.overlap.count + ' ' + plural(tot.overlap.count, 'collisione', 'collisioni'));
+    if (tot.covered.issues) parts.push(tot.covered.issues + ' ' + plural(tot.covered.issues, 'frame che copre', 'frame che coprono') + ' altri livelli');
+    if (parts.length) {
+      var line = fitLine('Problemi', parts.join(' · '));
+      var b = el('button', 'link-btn small', 'Mostra i dettagli');
+      b.type = 'button';
+      b.addEventListener('click', function () { openIssuePanel('all'); });
+      line.appendChild(b);
+      box.appendChild(line);
+    } else {
+      var ok = el('p', 'fit-line ok');
+      ok.innerHTML = DLC.icons.get('check');
+      ok.appendChild(document.createTextNode('Nessun problema: nessuna collisione e tutto dentro le aree'));
+      box.appendChild(ok);
+    }
+  }
+
+  /* Disegno in scala di un elemento: i suoi blocchi affiancati o impilati. */
+  function renderElementPreview(n, c) {
+    var host = $('element-preview'), g = c ? c.element : L.elementGeometry(n);
+    host.textContent = '';
+    if (!g.w || !g.h) return;
+    var k = Math.min(380 / g.w, 70 / g.h, 2), s = [];
+    s.push('<svg xmlns="http://www.w3.org/2000/svg" width="', Math.max(1, g.w * k), '" height="', Math.max(1, g.h * k),
+      '" viewBox="0 0 ', g.w, ' ', g.h, '" role="img" aria-label="Disegno di un elemento">');
+    g.blocks.forEach(function (b, i) {
+      var src = n.blocks[i], dark = DLC.preview.luminance(src.color) <= 0.55;
+      s.push('<rect x="', b.x, '" y="', b.y, '" width="', b.w, '" height="', b.h, '" fill="', src.color,
+        '" stroke="rgba(0,0,0,.4)" stroke-width="', 1 / k, '"/>');
+      var label = (src.name || '') + ' ' + b.w + '×' + b.h;
+      if (label.length * 6 <= b.w * k && b.h * k >= 14) {
+        s.push('<text x="', b.x + b.w / 2, '" y="', b.y + b.h / 2 + 3.5 / k, '" text-anchor="middle" font-size="', 10.5 / k,
+          '" fill="', dark ? '#fff' : '#111827', '" font-family="Segoe UI, system-ui, sans-serif">', label.replace(/[&<>"]/g, ''), '</text>');
+      }
+    });
+    s.push('</svg>');
+    host.innerHTML = s.join('');
+  }
+
   function renderNodeInfo() {
-    var info = selInfo(), n = info.node, e = selEntry(), c = e && e.contexts[0];
+    var info = selInfo();
+    if (!info) { renderEmptyState(); return; }
+    var n = info.node, e = selEntry(), c = e && e.contexts[0];
     var isFrame = n.type === 'frame';
 
     // Area di lavoro nel contenitore
@@ -391,7 +460,7 @@
         : 'gli offset superano il contenitore'));
     }
 
-    // Gruppo: ingombro dell'elemento; frame: dimensione e copie
+    // Gruppo: ingombro dell'elemento; frame: dimensione, copie e sfondo
     if (!isFrame) {
       var parts = [];
       n.blocks.forEach(function (b) {
@@ -402,6 +471,7 @@
       var txt = 'Elemento: ' + el0.w + ' × ' + el0.h + ' px';
       if (parts.length > 1) txt += ' — ' + (n.direction === 'v' ? 'altezza ' : 'larghezza ') + parts.join(' + ');
       $('element-info').textContent = txt;
+      renderElementPreview(n, c);
     } else {
       var fi = $('frame-info');
       fi.textContent = '';
@@ -411,6 +481,19 @@
         fi.appendChild(el('span', null, line));
       }
       fi.appendChild(el('span', 'muted', ' · contiene ' + n.children.length + ' ' + plural(n.children.length, 'oggetto', 'oggetti')));
+      var first = e && e.items[0], fill = fillOf(n), msg = '';
+      if (fill === 'auto') {
+        msg = !first ? '' : first.transparent
+          ? 'Automatico: ora è trasparente, perché con il colore pieno nasconderebbe ' + first.covers + ' ' + plural(first.covers, 'blocco', 'blocchi') + ' dei livelli sotto.'
+          : 'Automatico: ora ha il colore pieno (non copre blocchi dei livelli sotto; se lo facesse diventerebbe trasparente).';
+      } else if (fill === 'none') {
+        msg = 'Trasparente: si vedono i livelli sotto, resta solo il contorno.';
+      } else {
+        msg = first && first.covers
+          ? 'Colore pieno: ora nasconde ' + first.covers + ' ' + plural(first.covers, 'blocco', 'blocchi') + ' dei livelli sotto. Scegli «Trasparente» o «Auto» per vederli.'
+          : 'Colore pieno: copre ciò che sta sotto.';
+      }
+      $('frame-fill-info').textContent = msg;
     }
 
     // Distanze calcolate automaticamente con "Distribuisci"
@@ -497,28 +580,38 @@
 
   /* --- anteprima e tabella ------------------------------------------ */
 
+  /* Senza selezione l'anteprima è "reale": colori pieni, tutti i livelli, nessuna attenuazione. */
   function previewView() {
-    var many = L.countNodes(cfg().nodes) > 1;
+    var n = sel();
     return {
-      selected: sel().id,
-      focus: many ? L.descendantIds(sel()) : null,
+      selected: n ? n.id : '',
+      colorful: !n,
+      focus: n && state.ui.focusDim && L.countNodes(cfg().nodes) > 1 ? L.descendantIds(n) : null,
       coord: coordMode(),
       zoom: state.ui.zoom,
       showGrid: state.ui.showGrid,
       showNames: state.ui.showNames,
       showCoords: state.ui.showCoords,
-      solid: state.ui.solid
+      solid: state.ui.solid,
+      problems: true
     };
   }
 
   function renderPreview() {
+    var n = sel();
     $('preview-size').textContent = cfg().display.width + ' × ' + cfg().display.height + ' px';
+    var chip = $('preview-mode');
+    chip.textContent = n ? 'Selezione: «' + n.name + '»' : 'Vista reale · nessuna selezione';
+    chip.classList.toggle('real', !n);
+    $('btn-deselect').hidden = !n;
+    $('opt-focus-wrap').hidden = !n || L.countNodes(cfg().nodes) < 2;
     preview.render(state.result, previewView());
   }
 
   function outputFilter() {
-    if (!state.ui.onlyActive || L.countNodes(cfg().nodes) < 2) return null;
-    return L.descendantIds(sel());
+    var n = sel();
+    if (!state.ui.onlyActive || !n || L.countNodes(cfg().nodes) < 2) return null;
+    return L.descendantIds(n);
   }
 
   function renderSegs() {
@@ -532,11 +625,13 @@
   }
 
   function renderOutput() {
-    var multi = L.countNodes(cfg().nodes) > 1;
-    $('only-active-wrap').hidden = !multi;
-    $('only-active-label').textContent = 'Solo «' + sel().name + '»';
+    var multi = L.countNodes(cfg().nodes) > 1, n = sel();
+    $('only-active-wrap').hidden = !multi || !n;
+    if (n) $('only-active-label').textContent = 'Solo «' + n.name + '»';
     $('coord-wrap').hidden = !state.result.hasFrames;
-    var data = X.buildSheets(state.result, { view: state.ui.view, coord: coordMode(), nodes: outputFilter() });
+    var data = X.buildSheets(state.result, {
+      view: state.ui.view, coord: coordMode(), nodes: outputFilter(), sizes: state.ui.sizes, hide: state.ui.hiddenCols
+    });
     while (sheets.length < data.length) sheets.push(makeSheet());
     while (sheets.length > data.length) sheets.pop().destroy();
     data.forEach(function (d, i) { sheets[i].setData(d); });
@@ -551,30 +646,193 @@
     host.appendChild(b);
   }
 
+  /* Avviso cliccabile: porta al gruppo o frame responsabile. */
+  function issueBadge(host, kind, cls, text, icon) {
+    var count = issuesFor(kind).length;
+    var b = el('button', 'badge clickable ' + cls);
+    b.type = 'button';
+    b.innerHTML = DLC.icons.get(icon);
+    b.appendChild(document.createTextNode(text));
+    b.title = 'Clic: vai al gruppo o frame responsabile' + (count > 1 ? ' (clic ancora: il successivo, ' + count + ' in tutto)' : '');
+    if (state.issuePanel === kind) b.classList.add('open');
+    b.addEventListener('click', function () { goIssueKind(kind); });
+    host.appendChild(b);
+  }
+
+  var KIND_TITLE = {
+    all: 'Tutti i problemi',
+    'out-display': 'Oggetti fuori dal display',
+    'bad-area': 'Aree di lavoro non valide',
+    'out-area': 'Oggetti fuori dalla propria area',
+    overlap: 'Sovrapposizioni tra blocchi',
+    covered: 'Frame che coprono altri livelli'
+  };
+
+  function issuesFor(kind) {
+    var list = I.forNodes(state.issues, outputFilter());
+    return kind === 'all' ? list : list.filter(function (i) { return i.kind === kind; });
+  }
+
   function renderSummary() {
     var host = $('summary');
     host.textContent = '';
     var coord = coordMode(), filter = outputFilter();
     var items = X.pickItems(state.result, { coord: coord, nodes: filter });
-    var blocks = 0, frames = 0, outA = 0, outD = 0, ovl = 0, elements = {};
+    var blocks = 0, frames = 0, elements = {};
     items.forEach(function (it) {
       if (it.kind === 'frame') frames++;
       else { blocks++; elements[it.groupKey + ':' + it.n] = 1; }
-      if (it.outArea) outA++;
-      if (it.outDisplay) outD++;
-      if (it.overlap) ovl++;
     });
     var nEl = Object.keys(elements).length;
     badge(host, '', nEl + ' ' + plural(nEl, 'elemento', 'elementi') + ' · ' + blocks + ' ' + plural(blocks, 'blocco', 'blocchi') +
       (frames ? ' · ' + frames + ' frame' : ''), 'table');
-    if (outD) badge(host, 'err', outD + ' fuori dal display', 'warn');
-    if (outA) badge(host, 'warn', outA + ' fuori dalla propria area', 'warn');
-    if (ovl) badge(host, 'warn', ovl + ' ' + plural(ovl, 'sovrapposto', 'sovrapposti') + ' ad altri oggetti', 'warn');
+
+    var tot = I.totals(I.forNodes(state.issues, filter)), serious = 0;
+    if (tot['out-display'].issues) { issueBadge(host, 'out-display', 'err', tot['out-display'].count + ' fuori dal display', 'warn'); serious++; }
+    if (tot['bad-area'].issues) { issueBadge(host, 'bad-area', 'err', tot['bad-area'].issues + ' ' + plural(tot['bad-area'].issues, 'area non valida', 'aree non valide'), 'warn'); serious++; }
+    if (tot['out-area'].issues) { issueBadge(host, 'out-area', 'warn', tot['out-area'].count + ' fuori dalla propria area', 'warn'); serious++; }
+    if (tot.overlap.issues) {
+      issueBadge(host, 'overlap', 'warn', tot.overlap.count + ' ' + plural(tot.overlap.count, 'sovrapposizione', 'sovrapposizioni') + ' tra blocchi', 'warn');
+      serious++;
+    }
+    if (tot.covered.issues) {
+      var cv = tot.covered.issues;
+      issueBadge(host, 'covered', 'info', cv + ' ' + plural(cv, 'frame copre', 'frame coprono') + ' altri livelli', 'info');
+    }
     if (state.result.truncated) badge(host, 'err', 'Mostrati solo i primi ' + LIM.maxTotalItems + ' oggetti', 'warn');
-    if (items.length && !outA && !outD && !ovl) badge(host, 'ok', 'Tutto dentro le aree', 'check');
+    if (items.length && !serious) badge(host, 'ok', 'Nessuna collisione, tutto dentro le aree', 'check');
     if (coord === 'frame' && state.result.items.some(function (it) { return it.dup; })) {
       badge(host, 'info', 'Contenuto dei frame ripetuti mostrato una volta (coordinate uguali in ogni copia)', 'frame');
     }
+    var all = issuesFor('all');
+    if (all.length) {
+      var more = el('button', 'link-btn small', state.issuePanel ? 'Nascondi i dettagli' : 'Dettagli dei problemi');
+      more.type = 'button';
+      more.addEventListener('click', function () { if (state.issuePanel) closeIssuePanel(); else openIssuePanel('all'); });
+      host.appendChild(more);
+    }
+    renderIssues();
+  }
+
+  /* --- problemi: elenco con spiegazione e vai-a ----------------------- */
+
+  function openIssuePanel(kind) {
+    state.issuePanel = kind;
+    renderSummary();
+  }
+
+  function closeIssuePanel() {
+    state.issuePanel = null;
+    renderSummary();
+  }
+
+  /* Clic su un avviso: porta al gruppo o frame responsabile; clic ancora = il successivo. */
+  function goIssueKind(kind) {
+    var list = issuesFor(kind);
+    if (!list.length) return;
+    var cur = state.issueCursor[kind];
+    var i = cur == null || cur >= list.length - 1 ? 0 : cur + 1;
+    state.issueCursor[kind] = i;
+    state.issuePanel = kind;
+    openIssue(list[i], null);
+  }
+
+  /* Un nodo nascosto (o dentro un frame nascosto) renderebbe invisibile il problema: lo mostra. */
+  function ensureVisible(id) {
+    var changed = [], f = L.findNode(cfg(), id);
+    while (f) {
+      if (f.node.hidden) { delete f.node.hidden; changed.push(f.node.name); }
+      f = f.parent ? L.findNode(cfg(), f.parent.id) : null;
+    }
+    if (changed.length) toast('«' + changed.join('», «') + '» era nascosto: l\'ho reso visibile', { timeout: 3200 });
+    return changed.length > 0;
+  }
+
+  function revealPreview() {
+    var card = $('preview-card'), r = card.getBoundingClientRect();
+    var visible = Math.min(r.bottom, window.innerHeight) - Math.max(r.top, 60);
+    if (visible < r.height * 0.6 && visible < window.innerHeight * 0.6) {
+      window.scrollTo({ top: Math.max(0, window.scrollY + r.top - 64), behavior: 'smooth' });
+    }
+  }
+
+  /* Porta l'utente sul nodo indicato (o sul responsabile) e fa lampeggiare gli oggetti del problema. */
+  function openIssue(issue, nodeId) {
+    var id = nodeId || issue.node, keys = issue.keys;
+    if (nodeId) {
+      keys = issue.keys.filter(function (k) { return state.itemMap[k] && state.itemMap[k].node === nodeId; });
+      if (!keys.length) keys = issue.keys;
+    }
+    state.issueActive = issue.id;
+    var unhid = ensureVisible(id);
+    if (unhid) { commit(); recompute(); }
+    if (state.ui.selected !== id) select(id); else renderSummary();
+    preview.setSelection(keys);
+    preview.flash(keys);
+    revealPreview();
+  }
+
+  function applyIssueAction(issue) {
+    var a = issue.action;
+    if (!a) return;
+    var f = L.findNode(cfg(), a.node);
+    if (!f) return;
+    commit();
+    if (a.id === 'transparent') f.node.transparent = true;
+    renderAll();
+    commit();
+    toast('«' + f.node.name + '» ora ha lo sfondo trasparente', { action: { label: 'Annulla', fn: undo } });
+  }
+
+  function issueCard(it) {
+    var card = el('div', 'issue sev-' + it.severity + (state.issueActive === it.id ? ' active' : ''));
+    var ico = el('span', 'issue-ico');
+    ico.innerHTML = DLC.icons.get(it.severity === 'info' ? 'info' : 'warn');
+    card.appendChild(ico);
+    var body = el('div', 'issue-body');
+    body.appendChild(el('div', 'issue-title', it.title));
+    body.appendChild(el('div', 'issue-detail', it.detail));
+    if (it.fix) body.appendChild(el('div', 'issue-fix', it.fix));
+    var acts = el('div', 'issue-actions');
+    it.nodes.slice(0, 3).forEach(function (nid) {
+      var f = L.findNode(cfg(), nid);
+      if (!f) return;
+      var b = iconButton('link-btn', 'target', 'Vai a «' + f.node.name + '»');
+      b.addEventListener('click', function () { openIssue(it, nid); });
+      acts.appendChild(b);
+    });
+    if (it.action) {
+      var fix = el('button', 'btn primary small', it.action.label);
+      fix.type = 'button';
+      fix.addEventListener('click', function () { applyIssueAction(it); });
+      acts.appendChild(fix);
+    }
+    body.appendChild(acts);
+    card.appendChild(body);
+    return card;
+  }
+
+  function renderIssues() {
+    var host = $('issues'), kind = state.issuePanel, list = kind ? issuesFor(kind) : [];
+    host.textContent = '';
+    if (kind && !list.length) { state.issuePanel = null; kind = null; }
+    host.hidden = !kind;
+    if (!kind) return;
+    var head = el('div', 'issues-head');
+    head.appendChild(el('strong', null, KIND_TITLE[kind] + ' (' + list.length + ')'));
+    if (kind !== 'all') {
+      var all = el('button', 'link-btn small', 'Mostra tutti');
+      all.type = 'button';
+      all.addEventListener('click', function () { openIssuePanel('all'); });
+      head.appendChild(all);
+    }
+    var close = iconButton('icon-btn', 'close');
+    close.title = 'Chiudi l\'elenco';
+    close.setAttribute('aria-label', 'Chiudi l\'elenco dei problemi');
+    close.addEventListener('click', closeIssuePanel);
+    head.appendChild(close);
+    host.appendChild(head);
+    list.forEach(function (it) { host.appendChild(issueCard(it)); });
   }
 
   function renderSelStats(info) {
@@ -596,7 +854,10 @@
       autoCopy: function () { return state.ui.autoCopy; },
       onSelect: onSheetSelect,
       onHover: function (keys) { preview.setHover(keys || []); },
-      onCopy: onSheetCopy
+      onCopy: onSheetCopy,
+      widths: state.ui.colWidths,
+      keyPrefix: function () { return state.ui.view; },
+      onWidths: saveUISoon
     });
     $('sheets').appendChild(sh.root);
     return sh;
@@ -643,6 +904,11 @@
     }
   }
 
+  /* Clic su una zona vuota del display: nessuna selezione (vista reale con tutti i livelli). */
+  function onPreviewBackground() {
+    if (state.ui.selected) select('');
+  }
+
   function onCursor(pt) {
     $('cursor-pos').textContent = pt ? 'Cursore  X ' + pt.x + ' · Y ' + pt.y : 'Cursore  X — · Y —';
   }
@@ -663,7 +929,8 @@
     t.appendChild(el('div', 'tip-dim', it.w + ' × ' + it.h + ' px · ' + R.format(it.color, it.ral)));
     if (it.outDisplay) t.appendChild(el('div', 'tip-warn', 'Fuori dal display'));
     else if (it.outArea) t.appendChild(el('div', 'tip-warn', 'Fuori dalla propria area'));
-    if (it.overlap) t.appendChild(el('div', 'tip-warn', 'Sovrapposto ad altri oggetti'));
+    if (it.overlap) t.appendChild(el('div', 'tip-warn', 'Si sovrappone ad un altro blocco'));
+    if (it.hidden) t.appendChild(el('div', 'tip-dim', 'Nascosto nell\'anteprima'));
     t.hidden = false;
     if (e) placeTip(e);
   }
@@ -695,8 +962,10 @@
     commit();
   }
 
+  /* id = '' → nessuna selezione. */
   function select(id) {
-    if (id === state.ui.selected) return;
+    id = id || '';
+    if (id === (state.ui.selected || '')) return;
     state.ui.selected = id;
     saveUISoon();
     sheets.forEach(function (s) { s.clear(true); });
@@ -710,11 +979,11 @@
       return;
     }
     commit();
-    var info = selInfo();
-    var parent = info.node.type === 'frame' ? info.node : info.parent;
+    var info = selInfo();                       // null = nessuna selezione: si aggiunge in primo piano sul display
+    var parent = info ? (info.node.type === 'frame' ? info.node : info.parent) : null;
     var node = kind === 'frame' ? L.newFrame(cfg())
-      : L.newGroup(cfg(), parent ? parent.id : '', info.node.type === 'frame' ? '' : info.node.id);
-    var res = L.insertNode(cfg(), node, info.node.id);
+      : L.newGroup(cfg(), parent ? parent.id : '', info && info.node.type !== 'frame' ? info.node.id : '');
+    var res = L.insertNode(cfg(), node, info ? info.node.id : '');
     if (!res) {
       toast('Non si possono annidare più di ' + LIM.maxDepth + ' livelli di frame', { kind: 'warn' });
       return;
@@ -724,14 +993,20 @@
     renderAll();
     commit();
     toast((kind === 'frame' ? 'Aggiunto il frame «' : 'Aggiunto il gruppo «') + node.name + '» ' +
-      (res.parent ? 'dentro «' + res.parent.name + '»' : 'sul display'), { action: { label: 'Annulla', fn: undo } });
+      (res.parent ? 'dentro «' + res.parent.name + '»' : 'sul display') + ' (in primo piano)', { action: { label: 'Annulla', fn: undo } });
   }
 
-  function nodeAction(action) {
-    var info = selInfo(), id = info.node.id, name = info.node.name;
+  var ORDER_LABEL = { front: 'in primo piano', forward: 'avanti', backward: 'indietro', back: 'in secondo piano' };
+
+  /* Azioni sull'oggetto selezionato (o su quello indicato da id): ordine dei livelli, racchiudi, duplica, elimina. */
+  function nodeAction(action, id) {
+    var info = id ? L.findNode(cfg(), id) : selInfo();
+    if (!info) return;
+    id = info.node.id;
+    var name = info.node.name;
     commit();
-    if (action === 'up' || action === 'down') {
-      if (!L.moveSibling(cfg(), id, action === 'up' ? -1 : 1)) return;
+    if (ORDER_LABEL[action]) {
+      if (!L.reorder(cfg(), id, action)) return;
       renderAll();
       commit();
       return;
@@ -759,7 +1034,7 @@
     if (action === 'del') {
       var next = info.list[info.index - 1] || info.list[info.index + 1] || info.parent;
       if (!L.removeNode(cfg(), id)) return;
-      state.ui.selected = next ? next.id : cfg().nodes[0].id;
+      state.ui.selected = next ? next.id : '';
       saveUISoon();
       renderAll();
       commit();
@@ -768,11 +1043,113 @@
     }
   }
 
+  /* Nasconde o mostra un oggetto nell'anteprima e nelle immagini (non cambia le coordinate). */
+  function toggleHidden(id) {
+    var f = L.findNode(cfg(), id);
+    if (!f) return;
+    change(function () { if (f.node.hidden) delete f.node.hidden; else f.node.hidden = true; });
+  }
+
+  /* Spostamento (trascinamento nell'elenco o "Si trova in"): l'oggetto resta dov'è sul display. */
+  function moveNodeUI(id, parentId, index) {
+    var f = L.findNode(cfg(), id);
+    if (!f) return;
+    var name = f.node.name;
+    commit();
+    var r = L.moveNode(cfg(), id, parentId || '', index, { keepPosition: true });
+    if (!r.ok) {
+      renderNodeEditor();
+      toast(r.reason || 'Spostamento non possibile', { kind: 'warn' });
+      return;
+    }
+    if (!r.moved) { renderNodeEditor(); return; }
+    state.ui.selected = id;
+    saveUISoon();
+    renderAll();
+    commit();
+    var msg;
+    if (r.changedContainer) {
+      var target = parentId ? L.findNode(cfg(), parentId).node.name : 'Display';
+      msg = '«' + name + '» spostato in «' + target + '»: ' + (!r.kept ? 'gli offset ora si riferiscono al nuovo contenitore'
+        : r.exact ? 'la posizione sul display non cambia'
+          : 'non entra nel nuovo contenitore, gli offset sono stati limitati: controlla l\'area');
+    } else {
+      msg = '«' + name + '»: cambiato livello';
+    }
+    toast(msg, { action: { label: 'Annulla', fn: undo }, timeout: 5200 });
+  }
+
+  /* Unisce un altro gruppo in quello selezionato: i suoi blocchi diventano colonne dello stesso elemento. */
+  function mergeWith(otherId) {
+    var n = sel(), other = L.findNode(cfg(), otherId);
+    if (!n || !other) return;
+    var name = n.name, otherName = other.node.name;
+    commit();
+    var r = L.mergeGroups(cfg(), n.id, otherId);
+    if (!r.ok) {
+      toast('Unione non possibile: ' + r.reason, { kind: 'warn', timeout: 5000 });
+      return;
+    }
+    renderAll();
+    commit();
+    toast('«' + otherName + '» unito in «' + name + '»: ora ogni elemento ha ' + r.node.blocks.length +
+      ' blocchi affiancati e le posizioni non sono cambiate', { action: { label: 'Annulla', fn: undo }, timeout: 7000 });
+  }
+
+  function mergeMenuItems(n) {
+    var cands = L.mergeCandidates(cfg(), n.id);
+    var items = [{ title: 'Unisci «' + n.name + '» con…' }];
+    if (!cands.length) items.push({ label: 'Nessun altro gruppo nello stesso contenitore', disabled: true });
+    cands.forEach(function (c) {
+      items.push({
+        label: c.name, icon: 'merge', disabled: !c.ok, sub: c.ok ? 'diventa una colonna dell\'elemento' : c.reason,
+        hint: c.ok ? 'I blocchi di «' + c.name + '» diventano colonne di «' + n.name + '»' : c.reason,
+        fn: function () { mergeWith(c.id); }
+      });
+    });
+    return items;
+  }
+
+  function openMergeMenu(anchor, x, y) {
+    var n = sel();
+    if (!n || n.type !== 'group') return;
+    M.open({ items: mergeMenuItems(n), anchor: anchor, x: x, y: y });
+  }
+
+  /* Menu del tasto destro su un livello. */
+  function openNodeMenu(id, x, y) {
+    var info = L.findNode(cfg(), id);
+    if (!info) return;
+    var n = info.node, total = L.countNodes(cfg().nodes);
+    var atFront = info.index === info.list.length - 1, atBack = info.index === 0;
+    var items = [
+      { title: n.name },
+      { label: 'Porta in primo piano', icon: 'front', disabled: atFront, fn: function () { nodeAction('front', id); } },
+      { label: 'Porta avanti', icon: 'up', kbd: 'Alt+↑', disabled: atFront, fn: function () { nodeAction('forward', id); } },
+      { label: 'Porta indietro', icon: 'down', kbd: 'Alt+↓', disabled: atBack, fn: function () { nodeAction('backward', id); } },
+      { label: 'Porta in secondo piano', icon: 'back', disabled: atBack, fn: function () { nodeAction('back', id); } },
+      { sep: true },
+      { label: n.hidden ? 'Mostra nell\'anteprima' : 'Nascondi nell\'anteprima', icon: n.hidden ? 'eye' : 'eyeOff', fn: function () { toggleHidden(id); } },
+      { label: 'Duplica', icon: 'copy', disabled: total + L.countNodes([n]) > LIM.maxNodes, fn: function () { nodeAction('dup', id); } },
+      { label: 'Racchiudi in un frame', icon: 'wrap',
+        disabled: total >= LIM.maxNodes || info.depth + 1 + L.subtreeHeight(n) > LIM.maxDepth, fn: function () { nodeAction('wrap', id); } }
+    ];
+    if (n.type === 'group') {
+      items.push({ label: 'Unisci con un altro gruppo…', icon: 'merge', fn: function () { openMergeMenu(null, x, y); } });
+    }
+    items.push({ sep: true });
+    items.push({ label: 'Elimina', icon: 'trash', danger: true, disabled: total <= 1, fn: function () { nodeAction('del', id); } });
+    M.open({ items: items, x: x, y: y });
+  }
+
   function loadConfig(config, message) {
     commit();
     state.config = L.normalizeConfig(JSON.parse(JSON.stringify(config)));
-    state.ui.selected = state.config.nodes[0].id;
+    // con più oggetti si parte dalla vista reale (nessuna selezione); con uno solo lo si seleziona per modificarlo
+    state.ui.selected = state.config.nodes.length === 1 && state.config.nodes[0].type === 'group' ? state.config.nodes[0].id : '';
     sheets.forEach(function (s) { s.clear(true); });
+    state.issueActive = '';
+    state.issueCursor = {};
     saveUISoon();
     renderAll();
     commit();
@@ -817,7 +1194,7 @@
   }
 
   function frameOnly(fn) {
-    return function () { var n = sel(); return n.type === 'frame' ? fn(n) : ''; };
+    return function () { var n = sel(); return n && n.type === 'frame' ? fn(n) : ''; };
   }
 
   function bindEditor() {
@@ -844,68 +1221,76 @@
     // Struttura
     $('btn-add-group').addEventListener('click', function () { addNode('group'); });
     $('btn-add-frame').addEventListener('click', function () { addNode('frame'); });
-    [['btn-node-up', 'up'], ['btn-node-down', 'down'], ['btn-node-wrap', 'wrap'], ['btn-node-dup', 'dup'], ['btn-node-del', 'del']]
+    [['btn-node-front', 'front'], ['btn-node-up', 'forward'], ['btn-node-down', 'backward'], ['btn-node-back', 'back'],
+      ['btn-node-wrap', 'wrap'], ['btn-node-dup', 'dup'], ['btn-node-del', 'del']]
       .forEach(function (p) { $(p[0]).addEventListener('click', function () { nodeAction(p[1]); }); });
+    $('btn-deselect').addEventListener('click', function () { select(''); });
 
     // Nodo selezionato
-    bindTxt('node-name', function () { return sel().name; }, function (v) { sel().name = v; },
-      function () { return sel().type === 'frame' ? 'Frame' : 'Gruppo'; }, LIM.nameLength);
+    bindTxt('node-name', ofSel(function (n) { return n.name; }), function (v) { var n = sel(); if (n) n.name = v; },
+      function () { var n = sel(); return n && n.type === 'frame' ? 'Frame' : 'Gruppo'; }, LIM.nameLength);
     $('node-parent').addEventListener('change', function () {
-      var target = this.value, name = sel().name;
-      commit();
-      if (L.moveTo(cfg(), sel().id, target)) {
-        renderAll();
-        commit();
-        var t = target ? L.findNode(cfg(), target).node.name : 'Display';
-        toast('«' + name + '» spostato in «' + t + '»: gli offset ora si riferiscono al nuovo contenitore',
-          { action: { label: 'Annulla', fn: undo } });
-      } else {
-        renderNodeEditor();
-        toast('Spostamento non possibile', { kind: 'warn' });
-      }
+      var n = sel();
+      if (n) moveNodeUI(n.id, this.value, null);
+    });
+    $('opt-allow').addEventListener('change', function () {
+      var on = this.checked;
+      change(function () { var n = sel(); if (!n) return; if (on) n.allowOverlap = true; else delete n.allowOverlap; });
+      toast(on ? 'Sovrapposizione voluta: non verrà più segnalata per questo oggetto' : 'Le sovrapposizioni di questo oggetto tornano a essere segnalate');
     });
 
     ['top', 'left', 'right', 'bottom'].forEach(function (side) {
-      bindNum('off-' + side, function () { return sel().area[side]; }, function (v) { sel().area[side] = v; }, LIM.offset);
+      bindNum('off-' + side, ofSel(function (n) { return n.area[side]; }), function (v) { var n = sel(); if (n) n.area[side] = v; }, LIM.offset);
     });
 
     // Gruppo: blocchi
     Array.prototype.forEach.call(document.querySelectorAll('#dir-seg button'), function (b) {
       b.addEventListener('click', function () {
-        var dir = b.getAttribute('data-dir');
-        if (sel().type !== 'group' || sel().direction === dir) return;
-        change(function () { sel().direction = dir; }, { structural: true });
+        var dir = b.getAttribute('data-dir'), n = sel();
+        if (!n || n.type !== 'group' || n.direction === dir) return;
+        change(function () { n.direction = dir; }, { structural: true });
       });
     });
     $('btn-add-block').addEventListener('click', function () { blockTable.add(); });
+    $('btn-merge').addEventListener('click', function () { openMergeMenu($('btn-merge')); });
 
     // Frame
     Array.prototype.forEach.call(document.querySelectorAll('#frame-mode-seg button'), function (b) {
       b.addEventListener('click', function () {
         var mode = b.getAttribute('data-mode'), n = sel();
-        if (n.type !== 'frame' || n.mode === mode) return;
+        if (!n || n.type !== 'frame' || n.mode === mode) return;
         change(function () {
           n.mode = mode;
           if (mode === 'fixed' && !n.count) n.count = 1;
         }, { structural: true });
       });
     });
-    bindNum('frame-w', frameOnly(function (n) { return n.width; }), function (v) { if (sel().type === 'frame') sel().width = v; }, LIM.frameSize);
-    bindNum('frame-h', frameOnly(function (n) { return n.height; }), function (v) { if (sel().type === 'frame') sel().height = v; }, LIM.frameSize);
+    Array.prototype.forEach.call(document.querySelectorAll('#frame-fill-seg button'), function (b) {
+      b.addEventListener('click', function () {
+        var fill = b.getAttribute('data-fill'), n = sel();
+        if (!n || n.type !== 'frame' || fillOf(n) === fill) return;
+        change(function () {
+          if (fill === 'auto') delete n.transparent;
+          else n.transparent = fill === 'none';
+        }, { structural: true });
+      });
+    });
+    bindNum('frame-w', frameOnly(function (n) { return n.width; }), function (v) { var n = sel(); if (n && n.type === 'frame') n.width = v; }, LIM.frameSize);
+    bindNum('frame-h', frameOnly(function (n) { return n.height; }), function (v) { var n = sel(); if (n && n.type === 'frame') n.height = v; }, LIM.frameSize);
     frameColor = E.bindColor($('frame-color'), $('frame-color-sw'), {
-      get: function () { var n = sel(); return n.type === 'frame' ? { color: n.color, ral: n.ral } : { color: '#9da1aa', ral: '' }; },
-      set: function (v) { var n = sel(); if (n.type !== 'frame') return; n.color = v.color; n.ral = v.ral; scheduleRecompute(); },
+      get: function () { var n = sel(); return n && n.type === 'frame' ? { color: n.color, ral: n.ral } : { color: '#9da1aa', ral: '' }; },
+      set: function (v) { var n = sel(); if (!n || n.type !== 'frame') return; n.color = v.color; n.ral = v.ral; scheduleRecompute(); },
       commit: commit
     });
 
     // Disposizione / ripetizione
-    bindNum('count', function () { return sel().count; }, function (v) { sel().count = v; }, LIM.count);
-    bindNum('columns', function () { return sel().columns; }, function (v) { sel().columns = v; }, LIM.columns);
-    bindNum('row-gap', function () { return sel().rowGap; }, function (v) { sel().rowGap = v; }, LIM.gap);
-    bindNum('col-gap', function () { return sel().colGap; }, function (v) { sel().colGap = v; }, LIM.gap);
-    bindSel('order', function () { return sel().order; }, function (v) { sel().order = v; });
-    bindSel('align-h', function () { return sel().alignH; }, function (v) { sel().alignH = v; });
-    bindSel('align-v', function () { return sel().alignV; }, function (v) { sel().alignV = v; });
+    bindNum('count', ofSel(function (n) { return n.count; }), function (v) { var n = sel(); if (n) n.count = v; }, LIM.count);
+    bindNum('columns', ofSel(function (n) { return n.columns; }), function (v) { var n = sel(); if (n) n.columns = v; }, LIM.columns);
+    bindNum('row-gap', ofSel(function (n) { return n.rowGap; }), function (v) { var n = sel(); if (n) n.rowGap = v; }, LIM.gap);
+    bindNum('col-gap', ofSel(function (n) { return n.colGap; }), function (v) { var n = sel(); if (n) n.colGap = v; }, LIM.gap);
+    bindSel('order', ofSel(function (n) { return n.order; }), function (v) { var n = sel(); if (n) n.order = v; });
+    bindSel('align-h', ofSel(function (n) { return n.alignH; }), function (v) { var n = sel(); if (n) n.alignH = v; });
+    bindSel('align-v', ofSel(function (n) { return n.alignV; }), function (v) { var n = sel(); if (n) n.alignV = v; });
   }
 
   /* ------------------------------------------------------------------ */
@@ -1043,23 +1428,13 @@
     var z = $('zoom');
     z.value = state.ui.zoom;
     z.addEventListener('change', function () { state.ui.zoom = z.value; saveUISoon(); renderPreview(); });
-    [['opt-grid', 'showGrid'], ['opt-names', 'showNames'], ['opt-coords', 'showCoords'], ['opt-solid', 'solid']].forEach(function (p) {
+    [['opt-grid', 'showGrid'], ['opt-names', 'showNames'], ['opt-coords', 'showCoords'], ['opt-solid', 'solid'], ['opt-focus', 'focusDim']].forEach(function (p) {
       var c = $(p[0]);
       c.checked = state.ui[p[1]];
       c.addEventListener('change', function () { state.ui[p[1]] = c.checked; saveUISoon(); renderPreview(); });
     });
-    $('btn-png').addEventListener('click', function () {
-      DLC.preview.exportPNG(state.result, previewView()).then(function (blob) {
-        DLC.downloadBlob(fileBase() + '.png', blob);
-        toast('Immagine PNG ' + cfg().display.width + ' × ' + cfg().display.height + ' px scaricata');
-      }, function () {
-        toast('Impossibile creare l\'immagine PNG', { kind: 'err' });
-      });
-    });
-    $('btn-svg').addEventListener('click', function () {
-      DLC.download(fileBase() + '.svg', DLC.preview.exportSVG(state.result, previewView()), 'image/svg+xml');
-      toast('Disegno SVG scaricato');
-    });
+    $('btn-image').addEventListener('click', openImageDialog);
+    $('btn-image-go').addEventListener('click', doExportImage);
   }
 
   function bindOutputTools() {
@@ -1096,6 +1471,192 @@
     auto.addEventListener('change', function () { state.ui.autoCopy = auto.checked; saveUISoon(); renderSheetHint(); });
     $('btn-copy-all').addEventListener('click', copyAll);
     $('btn-export').addEventListener('click', openExport);
+    $('btn-cols').addEventListener('click', function () { openColumnsMenu(this); });
+  }
+
+  var COL_NAMES = {
+    path: 'Percorso (frame e gruppo)', ctx: 'Frame che contiene l\'elemento', n: 'Numero dell\'elemento (Elem.)',
+    row: 'Riga della griglia', col: 'Colonna della griglia', color: 'Colore (RAL / esadecimale)'
+  };
+
+  /* Menu "Colonne": larghezze e colonne descrittive da mostrare (X, Y, larghezza e altezza restano sempre). */
+  function openColumnsMenu(anchor) {
+    var hide = state.ui.hiddenCols, present = {};
+    state.sheetsData.forEach(function (d) { d.columns.forEach(function (c) { present[c.field] = true; }); });
+    function refresh() {
+      sheets.forEach(function (s) { s.clear(true); });
+      onSheetSelect(null);
+      saveUISoon();
+      renderOutput();
+    }
+    var items = [
+      { title: 'Larghezza delle colonne' },
+      { label: 'Adatta al contenuto', icon: 'columns', sub: 'oppure trascina il bordo della lettera di colonna',
+        fn: function () { sheets.forEach(function (s) { s.fitAll(); }); } },
+      { label: 'Larghezze automatiche', icon: 'undo', fn: function () { sheets.forEach(function (s) { s.resetWidths(); }); } },
+      { sep: true },
+      { title: 'Colonne da mostrare' }
+    ];
+    X.HIDEABLE.filter(function (k) { return present[k] || hide[k]; }).forEach(function (k) {
+      items.push({
+        label: COL_NAMES[k], checked: !hide[k], keepOpen: true,
+        fn: function () { if (hide[k]) delete hide[k]; else hide[k] = true; refresh(); }
+      });
+    });
+    if (state.ui.view === 'wide') {
+      items.push({ sep: true });
+      items.push({
+        label: 'Larghezza e altezza di ogni blocco', checked: state.ui.sizes, keepOpen: true,
+        fn: function () { state.ui.sizes = !state.ui.sizes; refresh(); }
+      });
+    }
+    items.push({ sep: true });
+    items.push({ title: 'X, Y, larghezza e altezza restano sempre visibili' });
+    M.open({ items: items, anchor: anchor, align: 'right' });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /*  Finestra: esporta immagine                                         */
+  /* ------------------------------------------------------------------ */
+
+  /* Livelli = oggetti di primo livello visibili, dallo sfondo al primo piano. */
+  function layerNodes() {
+    return cfg().nodes.filter(function (n) { return !n.hidden; });
+  }
+
+  function imageScope() {
+    var im = state.ui.img;
+    if (im.scope === 'sel' && !sel()) return 'all';
+    if (im.scope === 'layers' && cfg().nodes.length < 2) return 'all';
+    return im.scope;
+  }
+
+  function imageExtras(only) {
+    var im = state.ui.img;
+    return {
+      pixels: im.pixels, coord: im.coord, showGrid: im.grid, showNames: im.names, showCoords: im.coords,
+      solid: im.solid, problems: im.problems, frameOutline: im.frameOutline,
+      background: im.format === 'png' ? im.bg : 'white', only: only || null
+    };
+  }
+
+  function openImageDialog() {
+    state.ui.img.coord = coordMode();
+    renderImageDialog();
+    $('dlg-image').showModal();
+  }
+
+  function imgSelect(label, options, value, onChange) {
+    var wrap = el('label', 'opt');
+    wrap.appendChild(el('span', null, label));
+    var s = el('select', 'cell');
+    options.forEach(function (o) {
+      var op = el('option', null, o[1]);
+      op.value = String(o[0]);
+      s.appendChild(op);
+    });
+    s.value = String(value);
+    s.addEventListener('change', function () { onChange(s.value); saveUISoon(); renderImageDialog(); });
+    wrap.appendChild(s);
+    return wrap;
+  }
+
+  function imgCheck(label, value, onChange, title) {
+    var wrap = el('label', 'chk');
+    if (title) wrap.title = title;
+    var c = el('input');
+    c.type = 'checkbox';
+    c.checked = value;
+    c.addEventListener('change', function () { onChange(c.checked); saveUISoon(); renderImageDialog(); });
+    wrap.appendChild(c);
+    wrap.appendChild(document.createTextNode(label));
+    return wrap;
+  }
+
+  function renderImageDialog() {
+    var im = state.ui.img, host = $('image-opts'), n = sel(), scope = imageScope();
+    host.textContent = '';
+    var scopes = [['all', 'Tutto il display: tutti i livelli sovrapposti']];
+    if (n) scopes.push(['sel', 'Solo «' + n.name + '» e il suo contenuto']);
+    if (cfg().nodes.length > 1) scopes.push(['layers', 'Un file per ogni livello (archivio .zip)']);
+    host.appendChild(imgSelect('Contenuto', scopes, scope, function (v) { im.scope = v; }));
+    host.appendChild(imgSelect('Formato', [['png', 'PNG (immagine)'], ['svg', 'SVG (disegno vettoriale)']], im.format, function (v) { im.format = v; }));
+    host.appendChild(imgSelect('Dimensione', [[1, 'Reale: 1 pixel per pixel del display'], [2, 'Doppia (×2)'], [3, 'Tripla (×3)']], im.pixels,
+      function (v) { im.pixels = Number(v); }));
+    if (state.result.hasFrames) {
+      host.appendChild(imgSelect('Coordinate scritte', [['frame', 'Relative al frame'], ['display', 'Assolute sul display']], im.coord,
+        function (v) { im.coord = v; }));
+    }
+    var checks = el('div', 'img-checks');
+    checks.appendChild(imgCheck('Colori pieni (come sul pannello)', im.solid, function (v) { im.solid = v; }));
+    checks.appendChild(imgCheck('Nomi', im.names, function (v) { im.names = v; }));
+    checks.appendChild(imgCheck('Coordinate', im.coords, function (v) { im.coords = v; }));
+    checks.appendChild(imgCheck('Griglia', im.grid, function (v) { im.grid = v; }));
+    checks.appendChild(imgCheck('Contorno dei frame', im.frameOutline, function (v) { im.frameOutline = v; }, 'Bordo tratteggiato dei frame trasparenti'));
+    checks.appendChild(imgCheck('Evidenzia i problemi', im.problems, function (v) { im.problems = v; },
+      'Mostra le collisioni e gli oggetti fuori area come nell\'anteprima'));
+    if (im.format === 'png') {
+      checks.appendChild(imgCheck('Sfondo trasparente', im.bg === 'none', function (v) { im.bg = v ? 'none' : 'white'; },
+        'PNG con lo sfondo del display trasparente (senza griglia)'));
+    }
+    host.appendChild(checks);
+
+    var only = scope === 'sel' && n ? L.descendantIds(n) : null;
+    $('image-thumb').innerHTML = DLC.preview.thumbnail(state.result, previewView(), imageExtras(only), 440);
+    var W = cfg().display.width * im.pixels, H = cfg().display.height * im.pixels, info;
+    if (scope === 'layers') {
+      var names = layerNodes().map(function (x) { return '«' + x.name + '»'; });
+      info = names.length
+        ? names.length + ' ' + plural(names.length, 'file', 'file') + ' da ' + W + ' × ' + H + ' px, dallo sfondo al primo piano: ' + names.join(', ') +
+          '. L\'anteprima mostra la somma dei livelli.'
+        : 'Tutti i livelli sono nascosti.';
+    } else {
+      var hidden = [];
+      L.walk(cfg().nodes, function (x) { if (x.hidden) hidden.push('«' + x.name + '»'); });
+      info = 'Immagine di ' + W + ' × ' + H + ' px' + (scope === 'sel' ? ' con «' + n.name + '».' : ' con tutti i livelli visibili.') +
+        (hidden.length ? ' Nascosti, quindi non inclusi: ' + hidden.join(', ') + '.' : '');
+    }
+    $('image-info').textContent = info;
+    $('btn-image-go').disabled = scope === 'layers' && !layerNodes().length;
+  }
+
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+  function doExportImage() {
+    var im = state.ui.img, scope = imageScope(), res = state.result, view = previewView(), base = fileBase();
+    var btn = $('btn-image-go');
+    btn.disabled = true;
+    function done() { btn.disabled = false; }
+    function fail() { done(); toast('Impossibile creare l\'immagine', { kind: 'err' }); }
+    function one(only) {
+      var ex = imageExtras(only);
+      if (im.format === 'svg') {
+        return Promise.resolve(new Blob([DLC.preview.exportSVG(res, view, ex)], { type: 'image/svg+xml' }));
+      }
+      return DLC.preview.exportPNG(res, view, ex);
+    }
+
+    if (scope === 'layers') {
+      var layers = layerNodes();
+      Promise.all(layers.map(function (n, i) {
+        return one(L.descendantIds(n)).then(function (blob) { return blob.arrayBuffer(); }).then(function (buf) {
+          return { name: pad2(i + 1) + '-' + DLC.slug(n.name) + '.' + im.format, data: new Uint8Array(buf) };
+        });
+      })).then(function (files) {
+        DLC.downloadBlob(base + '_livelli.zip', new Blob([Z.build(files)], { type: 'application/zip' }));
+        done();
+        toast(files.length + ' immagini ' + im.format.toUpperCase() + ' (una per livello) scaricate in ' + base + '_livelli.zip');
+      }, fail);
+      return;
+    }
+    var n = sel(), only = scope === 'sel' && n ? L.descendantIds(n) : null;
+    var file = base + (only ? '_' + DLC.slug(n.name) : '') + '.' + im.format;
+    one(only).then(function (blob) {
+      DLC.downloadBlob(file, blob);
+      done();
+      toast('Immagine ' + im.format.toUpperCase() + ' scaricata (' + res.display.width * im.pixels + ' × ' + res.display.height * im.pixels + ' px' +
+        (only ? ', solo «' + n.name + '»' : ', tutti i livelli') + ')');
+    }, fail);
   }
 
   /* ------------------------------------------------------------------ */
@@ -1262,8 +1823,9 @@
   function renderExportOptions() {
     var x = state.ui.exp, host = $('export-opts');
     host.textContent = '';
-    if (L.countNodes(cfg().nodes) > 1) {
-      host.appendChild(optSelect('Contenuto', [['all', 'Tutto il layout'], ['active', 'Solo «' + sel().name + '»']], x.scope,
+    var cur = sel();
+    if (L.countNodes(cfg().nodes) > 1 && cur) {
+      host.appendChild(optSelect('Contenuto', [['all', 'Tutto il layout'], ['active', 'Solo «' + cur.name + '»']], x.scope,
         function (v) { x.scope = v; }));
     }
     if (state.result.hasFrames && x.fmt !== 'json') {
@@ -1277,6 +1839,7 @@
         host.appendChild(optSelect('Separatore', [[';', 'Punto e virgola ;'], [',', 'Virgola ,'], ['tab', 'Tabulazione']], x.sep,
           function (v) { x.sep = v; }));
       }
+      if (x.table === 'wide') host.appendChild(optCheck('Larghezza e altezza di ogni blocco', x.sizes, function (v) { x.sizes = v; }));
       host.appendChild(optCheck('Intestazioni', x.headers, function (v) { x.headers = v; }));
     }
     if (x.fmt === 'st') {
@@ -1318,8 +1881,9 @@
   function renderExportOutputs() {
     var x = state.ui.exp, host = $('export-outputs'), res = state.result;
     host.textContent = '';
-    var scoped = L.countNodes(cfg().nodes) > 1 && x.scope === 'active';
-    var nodes = scoped ? L.descendantIds(sel()) : null;
+    var cur = sel();
+    var scoped = L.countNodes(cfg().nodes) > 1 && x.scope === 'active' && !!cur;
+    var nodes = scoped ? L.descendantIds(cur) : null;
     var coord = res.hasFrames ? x.coord : 'display';
     var base = DLC.slug(cfg().name);
     if (x.fmt === 'st') {
@@ -1331,7 +1895,7 @@
     }
     var text, file, mime = 'text/plain;charset=utf-8', bom = false, label;
     if (x.fmt === 'tsv' || x.fmt === 'csv') {
-      var list = X.buildSheets(res, { view: x.table, coord: coord, nodes: nodes });
+      var list = X.buildSheets(res, { view: x.table, coord: coord, nodes: nodes, sizes: x.sizes });
       if (x.fmt === 'tsv') {
         text = X.sheetsToTSV(list, { headers: x.headers });
         file = base + '_coordinate.tsv';
@@ -1349,7 +1913,7 @@
       file = base + '_coordinate.txt';
       label = 'Elenco leggibile delle coordinate';
     } else {
-      text = X.toJSON(res, { rootId: scoped ? sel().id : null });
+      text = X.toJSON(res, { rootId: scoped ? cur.id : null });
       file = base + '_coordinate.json';
       mime = 'application/json';
       label = 'Dati strutturati (JSON): x, y relative al contenitore e displayX, displayY assolute';
@@ -1362,7 +1926,7 @@
   /* ------------------------------------------------------------------ */
 
   function bindDialogs() {
-    ['dlg-configs', 'dlg-export', 'dlg-help'].forEach(function (id) {
+    ['dlg-configs', 'dlg-export', 'dlg-image', 'dlg-help'].forEach(function (id) {
       var d = $(id), downOnBackdrop = false;
       d.addEventListener('mousedown', function (e) { downOnBackdrop = e.target === d; });
       d.addEventListener('click', function (e) {
@@ -1405,9 +1969,15 @@
 
   function bindShortcuts() {
     document.addEventListener('keydown', function (e) {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
-      var k = (e.key || '').toLowerCase(), t = e.target;
+      var t = e.target;
       var inField = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+      if (e.key === 'Escape' && !e.defaultPrevented && !inField && !M.isOpen() && !document.querySelector('dialog[open]')) {
+        if (state.issuePanel) closeIssuePanel();
+        else if (state.ui.selected) select('');
+        return;
+      }
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      var k = (e.key || '').toLowerCase();
       if (k === 's') {
         e.preventDefault();
         doSave(cfg().name);
@@ -1442,9 +2012,13 @@
       S.clearHash();
       if (link.config) {
         state.config = L.normalizeConfig(link.config);
-        state.ui.selected = state.config.nodes[0].id;
+        state.ui.selected = state.config.nodes.length === 1 && state.config.nodes[0].type === 'group' ? state.config.nodes[0].id : '';
         commit();
       }
+    }
+    // prima apertura (nessuna scelta salvata): con un solo gruppo lo si seleziona; poi si ricorda anche "nessuna selezione"
+    if (state.ui.selected === null) {
+      state.ui.selected = state.config.nodes.length === 1 && state.config.nodes[0].type === 'group' ? state.config.nodes[0].id : '';
     }
     selInfo();
 
@@ -1454,7 +2028,20 @@
       onHover: onPreviewHover,
       onMove: onPreviewMove,
       onClick: onPreviewClick,
+      onBackground: onPreviewBackground,
       onCursor: onCursor
+    });
+    tree = new DLC.Tree($('tree'), {
+      config: cfg,
+      result: function () { return state.result; },
+      selected: function () { return state.ui.selected || ''; },
+      meta: nodeMeta,
+      issues: issuesOf,
+      select: select,
+      toggleHidden: toggleHidden,
+      order: function (id, how) { nodeAction(how, id); },
+      move: moveNodeUI,
+      context: openNodeMenu
     });
     blockTable = new E.BlockTable($('blocks-editor'), {
       group: sel,

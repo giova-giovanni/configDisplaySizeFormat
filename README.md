@@ -15,23 +15,50 @@ Funziona interamente nel browser: nessuna installazione, nessun server, nessun d
    - **gruppi**: griglie di elementi uguali (es. 6 righe di LED + Scritta);
    - **frame**: contenitori in cui mettere altri gruppi e frame (“gruppi di gruppi”).
      Un frame può **riempire la sua area** (es. un pannello di base) oppure avere **dimensione fissa**
-     e ripetersi in griglia (es. 4 schede motore uguali).
+     e ripetersi in griglia (es. 4 schede motore uguali). I frame fungono anche da **livelli** sovrapposti
+     (es. sfondo, menu, pagina a schermo intero), con ordine stile PowerPoint (vedi sotto).
 3. **Area nel contenitore**: offset dai bordi del display o del frame che contiene l'oggetto
    (es. 30 px in alto per l'intestazione, 50 px in basso per i pulsanti).
 4. **Blocchi di ogni elemento**: es. *LED* 50 × 50 + *Scritta* 300 × 50. Per ogni blocco: larghezza, altezza,
    **distanza** (spazio prima del blocco: dal blocco precedente, per il primo dal bordo dell'area),
    allineamento e **colore**. I blocchi possono essere affiancati (→) o impilati (↓).
+   Ogni blocco è una **colonna con la sua larghezza**: per avere, ad esempio, una colonna larga 200 px e una larga 50 px
+   si aggiungono due blocchi allo stesso elemento (il numero di elementi sono le righe). Due gruppi già separati con gli
+   stessi elementi si possono fondere con **Unisci con un altro gruppo…** senza spostare nessun blocco.
 5. **Disposizione**: numero di elementi, colonne, distanza tra righe e tra colonne, numerazione per
    righe o per colonne, allineamento nell'area (sinistra, centro, destra, distribuisci).
 
 Il risultato si aggiorna mentre scrivi:
 
 - **anteprima** del display in scala, con frame, aree di lavoro, griglia e coordinate di ogni blocco
-  (passando il mouse su un oggetto vedi X, Y e dimensioni; con un clic lo selezioni); opzione
-  **Colori pieni** per vedere il pannello con i colori reali;
+  (passando il mouse su un oggetto vedi X, Y e dimensioni; con un clic lo selezioni). **Senza selezione** mostra
+  il pannello **reale**, con i colori pieni e tutti i livelli; con un oggetto selezionato evidenzia lui e attenua il resto;
 - **tabella delle coordinate** come un foglio Excel: un clic su una cella copia il valore, trascinando
-  copi un intervallo da incollare in Excel, Ctrl+C / Ctrl+A come in Excel;
-- **avvisi** per gli oggetti che escono dalla loro area o dal display e per quelli che si sovrappongono.
+  copi un intervallo da incollare in Excel, Ctrl+C / Ctrl+A come in Excel; **larghezza delle colonne regolabile**
+  (trascina il bordo, doppio clic per adattare) e menu **Colonne** per nascondere quelle descrittive;
+- **avvisi cliccabili** per i blocchi che si sovrappongono davvero, che escono dalla loro area o dal display:
+  un clic porta al gruppo o frame responsabile e spiega il motivo e come correggerlo.
+
+### Livelli, spostamenti e avvisi
+
+- **Ordine dei livelli come in PowerPoint**: nella struttura in alto c'è ciò che sta **davanti**, in basso lo sfondo.
+  Si cambia con i pulsanti *in primo piano / avanti / indietro / in secondo piano*, con **Alt+↑ / Alt+↓**,
+  con il **tasto destro** su una riga o **trascinando** la riga. L'**occhio** nasconde un oggetto
+  nell'anteprima e nelle immagini.
+- **Trascinamento** per spostare gruppi e frame da un contenitore all'altro: l'oggetto **resta dov'è** sul display
+  (gli offset sono ricalcolati) e, se non entra nel nuovo contenitore, l'app lo segnala (si può annullare).
+- **Sfondo del frame**: *Auto* (pieno, ma trasparente se altrimenti nasconderebbe blocchi dei livelli sotto),
+  *Colore* oppure *Trasparente*. Serve per sovrapporre sfondo, menu e pagina a schermo intero.
+- **Che cosa è un errore**: un frame è un contenitore e può stare sopra altri livelli, quindi **non** viene
+  segnalato. Si segnalano le **collisioni tra blocchi** di gruppi diversi (zona tratteggiata in rosso nell'anteprima),
+  i blocchi **fuori dalla propria area** e quelli **fuori dal display**. Se una sovrapposizione è voluta
+  (es. un menu a comparsa) si spunta **Sovrapposizione voluta** sull'oggetto.
+
+### Esportare l'immagine
+
+**Esporta immagine…** salva **tutto il display con tutti i livelli sovrapposti** (PNG o SVG, anche ×2 / ×3 o con sfondo
+trasparente), oppure solo l'oggetto selezionato, oppure **un file per ogni livello** in un archivio `.zip`.
+Gli avvisi dell'editor (bordi arancioni/rossi, zone in collisione) non compaiono nell'immagine, salvo richiesta.
 
 ### Coordinate nel frame o sul display
 
@@ -69,8 +96,8 @@ RAL sono le approssimazioni sRGB più diffuse (es. RAL 3020 = CC0605): indicativ
 - **Tastiera come in Excel**: Invio e frecce ↑ ↓ per spostarsi, Esc per annullare la modifica.
 - **Incolla da Excel** righe di blocchi (Nome, Larghezza, Altezza, Distanza, Allineamento, Colore).
 - **Esporta**: tabella per Excel (TSV), CSV, **codice Structured Text per CODESYS** (una struttura DUT
-  e una lista di variabili globali GVL con tutte le coordinate), testo, JSON ad albero; immagine PNG o SVG
-  dell'anteprima in scala 1:1.
+  e una lista di variabili globali GVL con tutte le coordinate), testo, JSON ad albero; nella vista “per elemento”
+  anche larghezza e altezza di ogni blocco. Immagine PNG o SVG con **Esporta immagine…** (vedi sopra).
 - **Aspetto**: tema chiaro/scuro/automatico e menu **Colore** per il colore dell'interfaccia
   (blu industriale predefinito, altri colori o un codice esadecimale/RAL).
 - **Annulla / Ripristina** (Ctrl+Z / Ctrl+Y), stampa.
@@ -134,12 +161,14 @@ Nessuna dipendenza da installare. Struttura:
 | Percorso | Contenuto |
 |---|---|
 | `index.html`, `css/style.css` | pagina e stile (colore principale in `--acc`) |
-| `js/layout.js` | motore di calcolo: frame, gruppi, coordinate relative e assolute (senza DOM, testabile) |
+| `js/layout.js` | motore di calcolo: frame, gruppi, livelli, coordinate relative e assolute, collisioni, spostamenti e unione di gruppi (senza DOM, testabile) |
+| `js/issues.js` | diagnostica: problemi spiegati in parole semplici, con nodi responsabili e oggetti da evidenziare (senza DOM, testabile) |
 | `js/ral.js` | tabella RAL Classic e lettura dei codici colore |
 | `js/exporters.js` | tabelle ed esportazioni (TSV, CSV, ST CODESYS, testo, JSON) |
+| `js/zip.js` | creazione di archivi `.zip` per le immagini dei livelli (senza DOM, testabile) |
 | `js/expr.js` | formule nelle celle (senza `eval`) |
-| `js/sheet.js`, `js/editor.js`, `js/colorpicker.js`, `js/preview.js`, `js/app.js` | interfaccia |
-| `tests/` | test automatici (`node --test`) |
+| `js/sheet.js`, `js/editor.js`, `js/colorpicker.js`, `js/menu.js`, `js/tree.js`, `js/preview.js`, `js/app.js` | interfaccia (tabella, celle, colori, menu a comparsa, albero dei livelli con trascinamento, anteprima, collegamento di tutto) |
+| `tests/` | test automatici (`node --test`): motore, diagnostica, tabelle, zip, disegno SVG e prove a campione |
 
 I layout salvati con la versione precedente (elenco di gruppi senza frame) vengono convertiti automaticamente.
 
